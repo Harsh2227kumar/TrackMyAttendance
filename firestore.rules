@@ -1,0 +1,67 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Login database / users collection
+    match /users/{userId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    // Students master data
+    match /students/{studentId} {
+      allow read: if true; // Needed for PRN search by organisers and login lookup
+      allow create, update, delete: if true; // Admin and setup scripts
+    }
+
+    // Faculty master data
+    match /faculty/{facultyId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    // Subject master data
+    match /subjects/{subjectId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    // Events
+    match /events/{eventId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    // Event Attendance records
+    match /event_attendance/{attendanceId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    // Attendance correction requests
+    match /attendance_requests/{requestId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    // Audit logs
+    match /audit_logs/{logId} {
+      allow read: if true;
+      allow create, delete: if true;
+      allow update: if false; // Immutable audit log
+    }
+  }
+}

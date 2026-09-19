@@ -1,0 +1,171 @@
+{
+  "entities": {
+    "Student": {
+      "title": "Student",
+      "description": "Student master data record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "prn": { "type": "string" },
+        "name": { "type": "string" },
+        "semester": { "type": "number" },
+        "section": { "type": "string" },
+        "username": { "type": "string" },
+        "password_hash": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "created_at": { "type": "string" },
+        "updated_at": { "type": "string" }
+      },
+      "required": ["prn", "name", "semester", "section"]
+    },
+    "Faculty": {
+      "title": "Faculty",
+      "description": "Faculty master record (independent of subjects)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "department": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "created_at": { "type": "string" }
+      },
+      "required": ["name", "department"]
+    },
+    "Subject": {
+      "title": "Subject",
+      "description": "Subject master record (independent of faculty)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "code": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "created_at": { "type": "string" }
+      },
+      "required": ["name", "code"]
+    },
+    "Event": {
+      "title": "Event",
+      "description": "College event attendance sheet record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "date": { "type": "string" },
+        "start_time": { "type": "string" },
+        "end_time": { "type": "string" },
+        "venue": { "type": "string" },
+        "description": { "type": "string" },
+        "organiser_id": { "type": "string" },
+        "organiser_name": { "type": "string" },
+        "status": { "type": "string", "enum": ["draft", "submitted"] },
+        "student_count": { "type": "number" },
+        "created_at": { "type": "string" },
+        "updated_at": { "type": "string" }
+      },
+      "required": ["title", "date", "venue", "status"]
+    },
+    "EventAttendance": {
+      "title": "EventAttendance",
+      "description": "Student attendance entry for a specific event",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "event_id": { "type": "string" },
+        "student_id": { "type": "string" },
+        "prn": { "type": "string" },
+        "student_name": { "type": "string" },
+        "semester": { "type": "number" },
+        "section": { "type": "string" },
+        "current_attendance_percentage": { "type": "number" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["event_id", "student_id", "prn", "current_attendance_percentage"]
+    },
+    "AttendanceRequest": {
+      "title": "AttendanceRequest",
+      "description": "Student request for attendance correction/update",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "student_id": { "type": "string" },
+        "student_prn": { "type": "string" },
+        "student_name": { "type": "string" },
+        "semester": { "type": "number" },
+        "section": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "admin_comment": { "type": "string" },
+        "items": { "type": "string" },
+        "created_at": { "type": "string" },
+        "updated_at": { "type": "string" }
+      },
+      "required": ["student_id", "student_prn", "status"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable security and audit track record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "user_id": { "type": "string" },
+        "user_name": { "type": "string" },
+        "user_role": { "type": "string" },
+        "action": { "type": "string" },
+        "entity": { "type": "string" },
+        "entity_id": { "type": "string" },
+        "old_value": { "type": "string" },
+        "new_value": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["user_name", "action", "entity", "timestamp"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Login database credential and user record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "username": { "type": "string" },
+        "password": { "type": "string" },
+        "role": { "type": "string", "enum": ["ADMIN", "ORGANISER", "STUDENT"] },
+        "name": { "type": "string" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["username", "password", "role"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "System authentication and login credentials"
+    },
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Master student records"
+    },
+    "/faculty/{facultyId}": {
+      "schema": { "$ref": "#/entities/Faculty" },
+      "description": "Faculty master members list"
+    },
+    "/subjects/{subjectId}": {
+      "schema": { "$ref": "#/entities/Subject" },
+      "description": "Academic course and subject master list"
+    },
+    "/events/{eventId}": {
+      "schema": { "$ref": "#/entities/Event" },
+      "description": "College events and attendance submissions"
+    },
+    "/event_attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/EventAttendance" },
+      "description": "Student attendance percentage and presence records"
+    },
+    "/attendance_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/AttendanceRequest" },
+      "description": "Student attendance update requests"
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Administrative audit trail logs"
+    }
+  }
+}
