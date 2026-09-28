@@ -156,6 +156,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
     date_to: '',
     prn: '',
     student_name: '',
+    has_attendance_request: false,
     attendance_operator: 'ALL',
     custom_min: 60,
     custom_max: 80,
@@ -1374,6 +1375,19 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                   onChange={(e) => setReportCriteria({ ...reportCriteria, prn: e.target.value, page: 1 })}
                   className="w-full p-2 border border-slate-300 rounded-lg font-mono"
                 />
+              </div>
+
+              {/* Has Attendance Request */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Has Attendance Request</label>
+                <select
+                  value={String(reportCriteria.has_attendance_request)}
+                  onChange={(e) => setReportCriteria({ ...reportCriteria, has_attendance_request: e.target.value === 'true', page: 1 })}
+                  className="w-full p-2 border border-slate-300 rounded-lg bg-white"
+                >
+                  <option value="false">No</option>
+                  <option value="true">Yes</option>
+                </select>
               </div>
 
               {/* Student Name */}

@@ -574,8 +574,9 @@ export async function queryAttendanceReports(criteria: ReportFilterCriteria): Pr
     const eventMap = new Map<string, EventRecord>();
     eventsSnap.docs.forEach((d) => eventMap.set(d.id, { id: d.id, ...d.data() } as EventRecord));
 
-    // 3. Fetch attendance requests lookup (for faculty and subject associations in missing attendance corrections)
+    // 3. Fetch all attendance requests and build set of PRNs that have requests
     const reqSnap = await getDocs(collection(db, 'attendance_requests'));
+    const prnsWithRequest = new Set<string>();
     const approvedRequestItems: Array<{
       prn: string;
       date: string;
@@ -585,6 +586,9 @@ export async function queryAttendanceReports(criteria: ReportFilterCriteria): Pr
     }> = [];
     reqSnap.docs.forEach((d) => {
       const data = d.data() as AttendanceRequest;
+      if (data.student_prn) {
+        prnsWithRequest.add(data.student_prn);
+      }
       if (data.items && Array.isArray(data.items)) {
         data.items.forEach((item) => {
           approvedRequestItems.push({
@@ -654,6 +658,12 @@ export async function queryAttendanceReports(criteria: ReportFilterCriteria): Pr
       // Subject filter
       if (criteria.subject_name.trim() && !r.subject_name?.toLowerCase().includes(criteria.subject_name.trim().toLowerCase())) {
         return false;
+      }
+      // Has attendance request filter
+      if (criteria.has_attendance_request !== undefined) {
+        const hasRequest = prnsWithRequest.has(r.prn);
+        if (criteria.has_attendance_request && !hasRequest) return false;
+        if (!criteria.has_attendance_request && hasRequest) return false;
       }
       // Date range filters
       if (criteria.date_from && r.date < criteria.date_from) {
