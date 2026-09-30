@@ -36,6 +36,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
   const [submitting, setSubmitting] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [currentAttendancePct, setCurrentAttendancePct] = useState<string>('');
 
   // Form State for multi-item attendance update request
   const [requestItems, setRequestItems] = useState<AttendanceRequestItem[]>([
@@ -151,6 +152,17 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
       }
     }
 
+    // Validate optional Current Attendance Percentage
+    let parsedPct: number | null = null;
+    if (currentAttendancePct.trim() !== '') {
+      const num = Number(currentAttendancePct);
+      if (isNaN(num) || num < 0 || num > 100) {
+        setErrorMessage('Current Attendance % must be a valid number between 0 and 100.');
+        return;
+      }
+      parsedPct = Math.round(num * 10) / 10;
+    }
+
     setSubmitting(true);
     try {
       await createAttendanceRequest(
@@ -158,8 +170,9 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
           student_id: currentUser.id,
           student_prn: currentUser.prn || '',
           student_name: currentUser.name,
-          semester: currentUser.semester || 5,
-          section: currentUser.section || 'A',
+          semester: currentUser.semester ?? 0,
+          section: currentUser.section || '',
+          current_attendance_percentage: parsedPct,
           items: requestItems,
         },
         currentUser
@@ -167,6 +180,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
 
       setSuccessMessage('Attendance Update Request submitted successfully! Awaiting Admin review.');
       // Reset form
+      setCurrentAttendancePct('');
       setRequestItems([
         {
           id: `item-${Date.now()}`,
@@ -209,13 +223,13 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                 </h1>
                 <div className="flex flex-wrap items-center gap-2.5 mt-3 text-xs text-slate-600">
                   <span className="px-2.5 py-1 bg-blue-50 text-blue-900 rounded-lg border border-blue-200 font-mono font-semibold">
-                    PRN: {currentUser.prn || '24070521001'}
+                    PRN: {currentUser.prn || '—'}
                   </span>
                   <span className="px-2.5 py-1 bg-slate-100 text-slate-700 rounded-lg border border-slate-200">
-                    Semester: <strong className="text-slate-900">{currentUser.semester || 5}</strong>
+                    Semester: <strong className="text-slate-900">{currentUser.semester ?? '—'}</strong>
                   </span>
                   <span className="px-2.5 py-1 bg-slate-100 text-slate-700 rounded-lg border border-slate-200">
-                    Section: <strong className="text-slate-900">{currentUser.section || 'A'}</strong>
+                    Section: <strong className="text-slate-900">{currentUser.section || '—'}</strong>
                   </span>
                 </div>
               </div>
@@ -341,18 +355,46 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                 <div>
                   <span className="text-blue-700 block">PRN:</span>
                   <strong className="text-slate-900 font-mono font-semibold text-sm">
-                    {currentUser.prn || '24070521001'}
+                    {currentUser.prn || '—'}
                   </strong>
                 </div>
                 <div>
                   <span className="text-blue-700 block">Semester:</span>
-                  <strong className="text-slate-900 font-semibold text-sm">{currentUser.semester || 5}</strong>
+                  <strong className="text-slate-900 font-semibold text-sm">{currentUser.semester ?? '—'}</strong>
                 </div>
                 <div>
                   <span className="text-blue-700 block">Section:</span>
-                  <strong className="text-slate-900 font-semibold text-sm">{currentUser.section || 'A'}</strong>
+                  <strong className="text-slate-900 font-semibold text-sm">{currentUser.section || '—'}</strong>
                 </div>
               </div>
+            </div>
+
+            {/* Student Current Attendance Percentage Input */}
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                <label className="text-xs font-bold text-slate-800">
+                  Current Attendance Percentage (Optional)
+                </label>
+                <span className="text-[11px] text-slate-500">
+                  If unknown or not entered, it will be marked as "Not Entered".
+                </span>
+              </div>
+              <div className="flex items-center space-x-2 max-w-xs">
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  max="100"
+                  placeholder="e.g. 78.5"
+                  value={currentAttendancePct}
+                  onChange={(e) => setCurrentAttendancePct(e.target.value)}
+                  className="w-full text-xs px-3 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white font-mono"
+                />
+                <span className="text-sm font-bold text-slate-600">%</span>
+              </div>
+              <p className="text-[11px] text-slate-500 leading-normal">
+                If your ERP portal displays your current attendance %, enter it here to help the department verify your eligibility. If not entered, the administrative cell will verify from class records.
+              </p>
             </div>
 
             {/* Notification messages */}
@@ -596,6 +638,16 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                       <span className="text-xs text-slate-500">
                         Submitted on {new Date(req.created_at).toLocaleDateString()}
                       </span>
+                      <span className="text-xs px-2.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                        Current Att.:{' '}
+                        {req.current_attendance_percentage !== null && req.current_attendance_percentage !== undefined ? (
+                          <strong className="text-slate-900 font-mono font-bold">
+                            {req.current_attendance_percentage}%
+                          </strong>
+                        ) : (
+                          <span className="italic text-slate-400">Not Entered</span>
+                        )}
+                      </span>
                     </div>
 
                     <div className="text-xs text-slate-500 font-mono">Request ID: {req.id.slice(0, 8)}</div>
@@ -619,6 +671,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                           <th className="py-2.5 px-3 text-left">Subject</th>
                           <th className="py-2.5 px-3 text-left">Faculty</th>
                           <th className="py-2.5 px-3 text-left">Event / Reason</th>
+                          <th className="py-2.5 px-3 text-center">Item Review</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 bg-white">
@@ -632,7 +685,25 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                             <td className="py-2 px-3 text-slate-600">{item.faculty_name}</td>
                             <td className="py-2 px-3 text-slate-700">
                               <div>{item.event_title}</div>
-                              {item.reason && <div className="text-[11px] text-slate-500 italic">{item.reason}</div>}
+                              {item.reason && <div className="text-[11px] text-slate-500 italic">"{item.reason}"</div>}
+                              {item.admin_note && (
+                                <div className="text-[11px] text-blue-700 font-medium mt-0.5">
+                                  Note: {item.admin_note}
+                                </div>
+                              )}
+                            </td>
+                            <td className="py-2 px-3 text-center">
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                  (item.status || req.status) === 'approved'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : (item.status || req.status) === 'rejected'
+                                    ? 'bg-rose-100 text-rose-800'
+                                    : 'bg-amber-100 text-amber-800'
+                                }`}
+                              >
+                                {item.status || req.status || 'pending'}
+                              </span>
                             </td>
                           </tr>
                         ))}
@@ -662,7 +733,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
           <div className="grid grid-cols-2 gap-4 text-xs">
             <div className="p-3 bg-slate-50 rounded-lg">
               <span className="text-slate-500 block">Permanent Registration Number (PRN)</span>
-              <strong className="text-slate-900 font-mono text-sm">{currentUser.prn || '24070521001'}</strong>
+              <strong className="text-slate-900 font-mono text-sm">{currentUser.prn || '—'}</strong>
             </div>
             <div className="p-3 bg-slate-50 rounded-lg">
               <span className="text-slate-500 block">Username</span>
@@ -670,11 +741,15 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
             </div>
             <div className="p-3 bg-slate-50 rounded-lg">
               <span className="text-slate-500 block">Enrolled Semester</span>
-              <strong className="text-slate-900 text-sm">Semester {currentUser.semester || 5}</strong>
+              <strong className="text-slate-900 text-sm">
+                {currentUser.semester ? `Semester ${currentUser.semester}` : '—'}
+              </strong>
             </div>
             <div className="p-3 bg-slate-50 rounded-lg">
               <span className="text-slate-500 block">Class Section</span>
-              <strong className="text-slate-900 text-sm">Section {currentUser.section || 'A'}</strong>
+              <strong className="text-slate-900 text-sm">
+                {currentUser.section ? `Section ${currentUser.section}` : '—'}
+              </strong>
             </div>
           </div>
 

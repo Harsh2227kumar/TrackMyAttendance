@@ -418,7 +418,7 @@ export const OrganiserPortal: React.FC<OrganiserPortalProps> = ({ currentUser, a
                   <input
                     type="text"
                     id="search-prn-input"
-                    placeholder="Enter PRN (e.g. 24070521256 or 256) or student name..."
+                    placeholder="Enter PRN or student name..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     className="w-full pl-9 pr-4 py-2.5 text-xs rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white font-mono"

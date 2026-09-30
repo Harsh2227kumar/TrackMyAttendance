@@ -93,7 +93,7 @@
         "student_name": { "type": "string" },
         "semester": { "type": "number" },
         "section": { "type": "string" },
-        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "status": { "type": "string", "enum": ["pending", "approved", "partially_approved", "rejected"] },
         "admin_comment": { "type": "string" },
         "items": { "type": "string" },
         "created_at": { "type": "string" },

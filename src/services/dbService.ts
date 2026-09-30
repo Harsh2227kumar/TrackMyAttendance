@@ -529,20 +529,34 @@ export async function createAttendanceRequest(
 
 export async function reviewAttendanceRequest(
   requestId: string,
-  status: 'approved' | 'rejected',
+  status: 'pending' | 'approved' | 'rejected' | 'partially_approved',
   adminComment: string,
-  user: CurrentUser
+  user: CurrentUser,
+  items?: AttendanceRequestItem[],
+  currentAttendancePercentage?: number | null
 ): Promise<void> {
   try {
     const ref = doc(db, 'attendance_requests', requestId);
     const oldSnap = await getDoc(ref);
     const oldStatus = oldSnap.exists() ? oldSnap.data()?.status : 'unknown';
 
-    await updateDoc(ref, {
+    const updatePayload: any = {
       status,
       admin_comment: adminComment || '',
       updated_at: new Date().toISOString(),
-    });
+    };
+    if (items && Array.isArray(items)) {
+      updatePayload.items = items;
+    }
+    if (currentAttendancePercentage !== undefined) {
+      updatePayload.current_attendance_percentage = currentAttendancePercentage;
+    }
+
+    await updateDoc(ref, updatePayload);
+
+    const itemsSummary = items
+      ? items.map((i) => `${i.subject_name || 'Item'}: ${i.status || status}`).join(', ')
+      : 'All Items';
 
     await logAudit(
       user,
@@ -550,7 +564,7 @@ export async function reviewAttendanceRequest(
       'attendance_requests',
       requestId,
       oldStatus,
-      `Status: ${status}, Comment: ${adminComment || 'None'}`
+      `Status: ${status}, Items: [${itemsSummary}], Comment: ${adminComment || 'None'}`
     );
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `attendance_requests/${requestId}`);
@@ -563,6 +577,7 @@ export async function reviewAttendanceRequest(
 export async function queryAttendanceReports(criteria: ReportFilterCriteria): Promise<{
   rows: ReportRow[];
   totalRecords: number;
+  allMatchingRows?: ReportRow[];
 }> {
   try {
     // 1. Fetch attendance records
@@ -574,43 +589,45 @@ export async function queryAttendanceReports(criteria: ReportFilterCriteria): Pr
     const eventMap = new Map<string, EventRecord>();
     eventsSnap.docs.forEach((d) => eventMap.set(d.id, { id: d.id, ...d.data() } as EventRecord));
 
-    // 3. Fetch all attendance requests and build set of PRNs that have requests
+    // 3. Fetch students to get baseline attendance percentages from recorded event attendances
+    const studentPctMap = new Map<string, number>();
+    for (const att of allAttendance) {
+      if (att.prn && att.current_attendance_percentage !== undefined && att.current_attendance_percentage !== null) {
+        studentPctMap.set(att.prn, Number(att.current_attendance_percentage));
+      }
+    }
+
+    // 4. Fetch all attendance requests
     const reqSnap = await getDocs(collection(db, 'attendance_requests'));
-    const prnsWithRequest = new Set<string>();
-    const approvedRequestItems: Array<{
-      prn: string;
-      date: string;
-      faculty_name: string;
-      subject_name: string;
-      event_title: string;
-    }> = [];
-    reqSnap.docs.forEach((d) => {
-      const data = d.data() as AttendanceRequest;
-      if (data.student_prn) {
-        prnsWithRequest.add(data.student_prn);
-      }
-      if (data.items && Array.isArray(data.items)) {
-        data.items.forEach((item) => {
-          approvedRequestItems.push({
-            prn: data.student_prn,
-            date: item.date,
-            faculty_name: item.faculty_name,
-            subject_name: item.subject_name,
-            event_title: item.event_title,
-          });
-        });
-      }
-    });
+    const allRequests: AttendanceRequest[] = reqSnap.docs.map((d) => ({ id: d.id, ...d.data() } as AttendanceRequest));
 
     // Build consolidated ReportRow objects
     const rawRows: ReportRow[] = [];
+    const processedKeys = new Set<string>();
 
+    // Process event attendance records
     for (const att of allAttendance) {
       const event = eventMap.get(att.event_id);
-      // Find matching subject/faculty if student requested correction for this event or general mapping
-      const matchedItem = approvedRequestItems.find(
-        (it) => it.prn === att.prn && (it.event_title === event?.title || it.date === event?.date)
-      );
+      const eventDate = event?.date || att.created_at.split('T')[0];
+      const eventTitle = event?.title || 'College Event';
+
+      // Look for a matching attendance request from this student
+      const matchedReq = allRequests.find((r) => r.student_prn === att.prn);
+      let matchedItem: AttendanceRequestItem | undefined;
+      if (matchedReq?.items && Array.isArray(matchedReq.items)) {
+        matchedItem = matchedReq.items.find(
+          (it) => it.event_title === eventTitle || it.date === eventDate
+        );
+      }
+
+      const requestStatus = matchedItem?.status || matchedReq?.status || 'none';
+      const key = `${att.prn}_${eventDate}_${eventTitle}_${matchedItem?.subject_name || ''}`;
+      processedKeys.add(key);
+
+      const parsedPct =
+        att.current_attendance_percentage !== undefined && att.current_attendance_percentage !== null
+          ? Number(att.current_attendance_percentage)
+          : null;
 
       rawRows.push({
         id: att.id,
@@ -618,15 +635,94 @@ export async function queryAttendanceReports(criteria: ReportFilterCriteria): Pr
         student_name: att.student_name,
         semester: att.semester,
         section: att.section,
-        event_title: event?.title || 'College Event',
-        date: event?.date || att.created_at.split('T')[0],
+        event_title: eventTitle,
+        date: eventDate,
         time: event ? `${event.start_time} - ${event.end_time}` : 'Full Day',
-        current_attendance_percentage: Number(att.current_attendance_percentage),
+        current_attendance_percentage: parsedPct,
         faculty_name: matchedItem?.faculty_name || '',
         subject_name: matchedItem?.subject_name || '',
         organiser_name: event?.organiser_name || '',
         venue: event?.venue || '',
+        request_status: requestStatus as any,
+        request_id: matchedReq?.id,
+        request_reason: matchedItem?.reason,
+        admin_comment: matchedReq?.admin_comment || matchedItem?.admin_note,
+        requested_item_count: matchedReq?.items?.length || 0,
+        source_type: 'event_attendance',
       });
+    }
+
+    // Process attendance requests directly (especially for pending or approved student claims)
+    for (const req of allRequests) {
+      // Determine student percentage:
+      // Priority 1: explicitly entered on request (req.current_attendance_percentage)
+      // Priority 2: recorded attendance in event_attendance
+      // Priority 3: null (Not Entered) - NO hardcoded fake percentages!
+      const recordedPct = studentPctMap.get(req.student_prn);
+      const basePct =
+        req.current_attendance_percentage !== undefined && req.current_attendance_percentage !== null
+          ? Number(req.current_attendance_percentage)
+          : recordedPct !== undefined
+          ? recordedPct
+          : null;
+
+      if (req.items && Array.isArray(req.items) && req.items.length > 0) {
+        req.items.forEach((item, idx) => {
+          const key = `${req.student_prn}_${item.date}_${item.event_title}_${item.subject_name}`;
+          // If already added via event_attendance, skip duplicate
+          if (processedKeys.has(key)) return;
+          processedKeys.add(key);
+
+          rawRows.push({
+            id: `req-${req.id}-${item.id || idx}`,
+            prn: req.student_prn,
+            student_name: req.student_name,
+            semester: req.semester,
+            section: req.section,
+            event_title: item.event_title || 'Attendance Update Request',
+            date: item.date,
+            time: `${item.start_time} - ${item.end_time}`,
+            current_attendance_percentage: basePct,
+            faculty_name: item.faculty_name || '',
+            subject_name: item.subject_name || '',
+            organiser_name: 'Academic Cell',
+            venue: 'Lecture Hall / Lab',
+            request_status: (item.status || req.status || 'pending') as any,
+            request_id: req.id,
+            request_reason: item.reason || '',
+            admin_comment: req.admin_comment || item.admin_note || '',
+            requested_item_count: req.items?.length || 1,
+            source_type: 'attendance_request',
+          });
+        });
+      } else {
+        // Request without items
+        const key = `${req.student_prn}_${req.created_at.split('T')[0]}_request`;
+        if (!processedKeys.has(key)) {
+          processedKeys.add(key);
+          rawRows.push({
+            id: `req-${req.id}`,
+            prn: req.student_prn,
+            student_name: req.student_name,
+            semester: req.semester,
+            section: req.section,
+            event_title: 'Attendance Correction Claim',
+            date: req.created_at.split('T')[0],
+            time: 'N/A',
+            current_attendance_percentage: basePct,
+            faculty_name: '',
+            subject_name: '',
+            organiser_name: 'Academic Cell',
+            venue: 'N/A',
+            request_status: (req.status || 'pending') as any,
+            request_id: req.id,
+            request_reason: '',
+            admin_comment: req.admin_comment || '',
+            requested_item_count: 0,
+            source_type: 'attendance_request',
+          });
+        }
+      }
     }
 
     // Apply parameterized filters
@@ -659,12 +755,26 @@ export async function queryAttendanceReports(criteria: ReportFilterCriteria): Pr
       if (criteria.subject_name.trim() && !r.subject_name?.toLowerCase().includes(criteria.subject_name.trim().toLowerCase())) {
         return false;
       }
-      // Has attendance request filter
-      if (criteria.has_attendance_request !== undefined) {
-        const hasRequest = prnsWithRequest.has(r.prn);
-        if (criteria.has_attendance_request && !hasRequest) return false;
-        if (!criteria.has_attendance_request && hasRequest) return false;
+
+      // Request Status Filter (pending / approved / rejected / etc.)
+      if (criteria.request_status && criteria.request_status !== 'ALL') {
+        const s = criteria.request_status;
+        if (s === 'ANY_REQUEST') {
+          if (!r.request_status || r.request_status === 'none') return false;
+        } else if (s === 'NONE') {
+          if (r.request_status && r.request_status !== 'none') return false;
+        } else {
+          if (r.request_status !== s) return false;
+        }
       }
+
+      // Has attendance request boolean filter
+      if (criteria.has_attendance_request !== undefined && criteria.has_attendance_request !== 'ALL') {
+        const hasReq = Boolean(r.request_status && r.request_status !== 'none');
+        if (criteria.has_attendance_request === true && !hasReq) return false;
+        if (criteria.has_attendance_request === false && hasReq) return false;
+      }
+
       // Date range filters
       if (criteria.date_from && r.date < criteria.date_from) {
         return false;
@@ -672,24 +782,36 @@ export async function queryAttendanceReports(criteria: ReportFilterCriteria): Pr
       if (criteria.date_to && r.date > criteria.date_to) {
         return false;
       }
+
       // Attendance percentage conditions
       const pct = r.current_attendance_percentage;
-      if (criteria.attendance_operator === 'gte_75' && pct < 75) {
-        return false;
-      }
-      if (criteria.attendance_operator === 'lt_75' && pct >= 75) {
-        return false;
-      }
-      if (criteria.attendance_operator === 'between') {
-        const min = criteria.custom_min ?? 60;
-        const max = criteria.custom_max ?? 80;
-        if (pct < min || pct > max) return false;
-      }
-      if (criteria.attendance_operator === 'custom_min' && criteria.custom_min !== undefined) {
-        if (pct < criteria.custom_min) return false;
-      }
-      if (criteria.attendance_operator === 'custom_max' && criteria.custom_max !== undefined) {
-        if (pct > criteria.custom_max) return false;
+      if (criteria.attendance_operator === 'not_entered') {
+        if (pct !== null && pct !== undefined) return false;
+      } else if (criteria.attendance_operator === 'entered') {
+        if (pct === null || pct === undefined) return false;
+      } else if (pct === null || pct === undefined) {
+        // If an explicit percentage threshold filter is selected (>=75, <75, between), exclude records with no recorded percentage
+        if (criteria.attendance_operator !== 'ALL') {
+          return false;
+        }
+      } else {
+        if (criteria.attendance_operator === 'gte_75' && pct < 75) {
+          return false;
+        }
+        if (criteria.attendance_operator === 'lt_75' && pct >= 75) {
+          return false;
+        }
+        if (criteria.attendance_operator === 'between') {
+          const min = criteria.custom_min ?? 60;
+          const max = criteria.custom_max ?? 80;
+          if (pct < min || pct > max) return false;
+        }
+        if (criteria.attendance_operator === 'custom_min' && criteria.custom_min !== undefined) {
+          if (pct < criteria.custom_min) return false;
+        }
+        if (criteria.attendance_operator === 'custom_max' && criteria.custom_max !== undefined) {
+          if (pct > criteria.custom_max) return false;
+        }
       }
 
       return true;
@@ -700,6 +822,12 @@ export async function queryAttendanceReports(criteria: ReportFilterCriteria): Pr
     filtered.sort((a, b) => {
       let valA: any = (a as any)[sortBy] ?? '';
       let valB: any = (b as any)[sortBy] ?? '';
+
+      if (sortBy === 'current_attendance_percentage') {
+        const numA = typeof a.current_attendance_percentage === 'number' ? a.current_attendance_percentage : -1;
+        const numB = typeof b.current_attendance_percentage === 'number' ? b.current_attendance_percentage : -1;
+        return sortOrder === 'asc' ? numA - numB : numB - numA;
+      }
 
       if (typeof valA === 'number' && typeof valB === 'number') {
         return sortOrder === 'asc' ? valA - valB : valB - valA;
@@ -719,10 +847,11 @@ export async function queryAttendanceReports(criteria: ReportFilterCriteria): Pr
     return {
       rows: paginated,
       totalRecords,
+      allMatchingRows: filtered,
     };
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, 'reports');
-    return { rows: [], totalRecords: 0 };
+    return { rows: [], totalRecords: 0, allMatchingRows: [] };
   }
 }
 

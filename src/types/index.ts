@@ -80,6 +80,7 @@ export interface AttendanceRequestItem {
   faculty_name: string;
   reason: string;
   status?: 'pending' | 'approved' | 'rejected';
+  admin_note?: string;
 }
 
 export interface AttendanceRequest {
@@ -89,7 +90,8 @@ export interface AttendanceRequest {
   student_name: string;
   semester: number;
   section: string;
-  status: 'pending' | 'approved' | 'rejected';
+  current_attendance_percentage?: number | null;
+  status: 'pending' | 'approved' | 'rejected' | 'partially_approved';
   admin_comment?: string;
   items: AttendanceRequestItem[];
   created_at: string;
@@ -119,7 +121,9 @@ export interface ReportFilterCriteria {
   date_to: string;
   prn: string;
   student_name: string;
-  attendance_operator: 'ALL' | 'gte_75' | 'lt_75' | 'between' | 'custom_min' | 'custom_max';
+  has_attendance_request?: boolean | 'ALL';
+  request_status?: 'ALL' | 'ANY_REQUEST' | 'pending' | 'approved' | 'rejected' | 'partially_approved' | 'NONE';
+  attendance_operator: 'ALL' | 'gte_75' | 'lt_75' | 'between' | 'not_entered' | 'entered' | 'custom_min' | 'custom_max';
   custom_min?: number;
   custom_max?: number;
   sortBy: string;
@@ -137,9 +141,15 @@ export interface ReportRow {
   event_title: string;
   date: string;
   time: string;
-  current_attendance_percentage: number;
+  current_attendance_percentage?: number | null;
   faculty_name?: string;
   subject_name?: string;
   organiser_name?: string;
   venue?: string;
+  request_status?: 'pending' | 'approved' | 'rejected' | 'partially_approved' | 'none';
+  request_id?: string;
+  request_reason?: string;
+  admin_comment?: string;
+  requested_item_count?: number;
+  source_type?: 'event_attendance' | 'attendance_request';
 }

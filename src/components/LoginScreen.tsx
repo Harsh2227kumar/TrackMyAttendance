@@ -192,7 +192,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 required
                 placeholder={
                   selectedRole === 'STUDENT'
-                    ? 'e.g. 24070521001'
+                    ? 'Enter your PRN'
                     : selectedRole === 'ORGANISER'
                     ? 'org.vp'
                     : 'admin.academic'

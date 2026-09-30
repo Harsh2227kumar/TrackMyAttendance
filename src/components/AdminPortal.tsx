@@ -7,6 +7,7 @@ import {
   EventRecord,
   EventAttendance,
   AttendanceRequest,
+  AttendanceRequestItem,
   AuditLog,
   ReportFilterCriteria,
   ReportRow,
@@ -70,6 +71,11 @@ import {
   RefreshCw,
   Eye,
   FileSpreadsheet,
+  Clock,
+  Check,
+  X,
+  SlidersHorizontal,
+  Sparkles,
 } from 'lucide-react';
 
 interface AdminPortalProps {
@@ -134,8 +140,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
 
   // Request Review modal
   const [selectedRequest, setSelectedRequest] = useState<AttendanceRequest | null>(null);
+  const [reviewItems, setReviewItems] = useState<AttendanceRequestItem[]>([]);
+  const [reviewOverallStatus, setReviewOverallStatus] = useState<'pending' | 'approved' | 'rejected' | 'partially_approved'>('approved');
   const [adminCommentInput, setAdminCommentInput] = useState('');
-  const [requestFilter, setRequestFilter] = useState<'ALL' | 'pending' | 'approved' | 'rejected'>('ALL');
+  const [reviewAttendancePct, setReviewAttendancePct] = useState<string>('');
+  const [requestFilter, setRequestFilter] = useState<'ALL' | 'pending' | 'approved' | 'rejected' | 'partially_approved'>('ALL');
+  const [requestSearch, setRequestSearch] = useState('');
 
   // Event Details / Attendance view
   const [selectedEventForView, setSelectedEventForView] = useState<EventRecord | null>(null);
@@ -156,7 +166,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
     date_to: '',
     prn: '',
     student_name: '',
-    has_attendance_request: false,
+    has_attendance_request: 'ALL',
+    request_status: 'ALL',
     attendance_operator: 'ALL',
     custom_min: 60,
     custom_max: 80,
@@ -167,9 +178,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
   });
 
   const [reportRows, setReportRows] = useState<ReportRow[]>([]);
+  const [allMatchingRows, setAllMatchingRows] = useState<ReportRow[]>([]);
   const [totalReportRecords, setTotalReportRecords] = useState(0);
   const [reportLoading, setReportLoading] = useState(false);
-  const [exportFormat, setExportFormat] = useState<ExportFormatType>('faculty_wise');
+  const [exportFormat, setExportFormat] = useState<ExportFormatType>('attendance_requests_wise');
 
   // Load all master data
   const loadAllData = async () => {
@@ -205,9 +217,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
   const fetchReportResults = async () => {
     setReportLoading(true);
     try {
-      const { rows, totalRecords } = await queryAttendanceReports(reportCriteria);
+      const { rows, totalRecords, allMatchingRows: matching } = await queryAttendanceReports(reportCriteria);
       setReportRows(rows);
       setTotalReportRecords(totalRecords);
+      if (matching) {
+        setAllMatchingRows(matching);
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -409,18 +424,136 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
   };
 
   // ----------------------------------------------------
-  // ATTENDANCE REQUEST ACTIONS
+  // ATTENDANCE REQUEST ACTIONS & CUSTOM REVIEW
   // ----------------------------------------------------
-  const handleReviewRequest = async (status: 'approved' | 'rejected') => {
+  const handleOpenReviewModal = (req: AttendanceRequest) => {
+    setSelectedRequest(req);
+    const items: AttendanceRequestItem[] = (req.items || []).map((it) => ({
+      ...it,
+      status: it.status || (req.status === 'approved' ? 'approved' : req.status === 'rejected' ? 'rejected' : 'approved'),
+      admin_note: it.admin_note || '',
+    }));
+    setReviewItems(items);
+    setReviewOverallStatus(req.status === 'pending' ? 'approved' : req.status);
+    setAdminCommentInput(req.admin_comment || '');
+    setReviewAttendancePct(
+      req.current_attendance_percentage !== null && req.current_attendance_percentage !== undefined
+        ? String(req.current_attendance_percentage)
+        : ''
+    );
+  };
+
+  const handleItemStatusChange = (index: number, newStatus: 'pending' | 'approved' | 'rejected') => {
+    const updated = [...reviewItems];
+    updated[index] = { ...updated[index], status: newStatus };
+    setReviewItems(updated);
+
+    // Auto-calculate suggested overall status based on items
+    const allApproved = updated.every((i) => i.status === 'approved');
+    const allRejected = updated.every((i) => i.status === 'rejected');
+    if (allApproved) {
+      setReviewOverallStatus('approved');
+    } else if (allRejected) {
+      setReviewOverallStatus('rejected');
+    } else {
+      setReviewOverallStatus('partially_approved');
+    }
+  };
+
+  const handleItemNoteChange = (index: number, note: string) => {
+    const updated = [...reviewItems];
+    updated[index] = { ...updated[index], admin_note: note };
+    setReviewItems(updated);
+  };
+
+  const handleApproveAllItems = () => {
+    const updated = reviewItems.map((i) => ({ ...i, status: 'approved' as const }));
+    setReviewItems(updated);
+    setReviewOverallStatus('approved');
+  };
+
+  const handleRejectAllItems = () => {
+    const updated = reviewItems.map((i) => ({ ...i, status: 'rejected' as const }));
+    setReviewItems(updated);
+    setReviewOverallStatus('rejected');
+  };
+
+  const handleResetAllToPending = () => {
+    const updated = reviewItems.map((i) => ({ ...i, status: 'pending' as const }));
+    setReviewItems(updated);
+    setReviewOverallStatus('pending');
+  };
+
+  const handleSaveCustomReview = async () => {
     if (!selectedRequest) return;
+    setLoading(true);
     try {
-      await reviewAttendanceRequest(selectedRequest.id, status, adminCommentInput, currentUser);
-      setStatusMsg({ text: `Request marked as ${status.toUpperCase()}.`, type: 'success' });
+      let pctToSave: number | null = null;
+      if (reviewAttendancePct.trim() !== '') {
+        const num = Number(reviewAttendancePct);
+        if (isNaN(num) || num < 0 || num > 100) {
+          alert('Current Attendance % must be a number between 0 and 100');
+          setLoading(false);
+          return;
+        }
+        pctToSave = Math.round(num * 10) / 10;
+      }
+
+      await reviewAttendanceRequest(
+        selectedRequest.id,
+        reviewOverallStatus,
+        adminCommentInput,
+        currentUser,
+        reviewItems,
+        pctToSave
+      );
+      setStatusMsg({
+        text: `Request for ${selectedRequest.student_name} (${selectedRequest.student_prn}) finalized as ${reviewOverallStatus.toUpperCase().replace('_', ' ')}.`,
+        type: 'success',
+      });
       setSelectedRequest(null);
       setAdminCommentInput('');
+      setReviewAttendancePct('');
+      setReviewItems([]);
       await loadAllData();
+      if (activeTab === 'reports') {
+        await fetchReportResults();
+      }
     } catch (err: any) {
       alert(err.message || 'Error reviewing request');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleQuickReview = async (req: AttendanceRequest, status: 'approved' | 'rejected') => {
+    if (!confirm(`Mark attendance request for ${req.student_name} (${req.student_prn}) as ${status.toUpperCase()}?`)) return;
+    setLoading(true);
+    try {
+      const items = (req.items || []).map((it) => ({
+        ...it,
+        status: status,
+      }));
+      await reviewAttendanceRequest(
+        req.id,
+        status,
+        `Quick ${status} by administrator`,
+        currentUser,
+        items,
+        req.current_attendance_percentage
+      );
+      setStatusMsg({
+        text: `Request for ${req.student_name} marked as ${status.toUpperCase()}.`,
+        type: 'success',
+      });
+      await loadAllData();
+      if (activeTab === 'reports') {
+        await fetchReportResults();
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error updating request');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -428,13 +561,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
   // REPORT EXPORT TRIGGERS
   // ----------------------------------------------------
   const handleExportExcel = () => {
-    if (reportRows.length === 0) {
+    const targetRows = allMatchingRows && allMatchingRows.length > 0 ? allMatchingRows : reportRows;
+    if (targetRows.length === 0) {
       alert('No matching report records found to export. Adjust your filters.');
       return;
     }
-    exportReportsToExcel(reportRows, exportFormat);
+    exportReportsToExcel(targetRows, exportFormat);
     setStatusMsg({
-      text: `Exported ${reportRows.length} records in "${exportFormat.replace(/_/g, ' ')}" format.`,
+      text: `Exported ${targetRows.length} matching student records in "${exportFormat.replace(/_/g, ' ')}" format.`,
       type: 'success',
     });
   };
@@ -1112,92 +1246,263 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
       {/* -------------------------------------------------- */}
       {/* TAB 6: ATTENDANCE REQUEST QUEUE */}
       {/* -------------------------------------------------- */}
-      {activeTab === 'requests' && (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-4">
-            <div>
-              <h1 className="text-lg font-bold text-slate-900">Attendance Update Request Queue</h1>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Review student claims for missed lecture attendance with independent Subject and Faculty entries.
-              </p>
+      {activeTab === 'requests' && (() => {
+        const totalCount = requests.length;
+        const pendingCount = requests.filter((r) => r.status === 'pending').length;
+        const approvedCount = requests.filter((r) => r.status === 'approved').length;
+        const partialCount = requests.filter((r) => r.status === 'partially_approved').length;
+        const rejectedCount = requests.filter((r) => r.status === 'rejected').length;
+
+        const filteredQueue = requests.filter((r) => {
+          const matchesFilter = requestFilter === 'ALL' || r.status === requestFilter;
+          if (!matchesFilter) return false;
+          if (!requestSearch.trim()) return true;
+          const q = requestSearch.trim().toLowerCase();
+          const matchesStudent =
+            r.student_name.toLowerCase().includes(q) || r.student_prn.toLowerCase().includes(q);
+          const matchesItems = r.items?.some(
+            (it) =>
+              it.subject_name.toLowerCase().includes(q) ||
+              it.faculty_name.toLowerCase().includes(q) ||
+              it.event_title.toLowerCase().includes(q) ||
+              it.date.includes(q)
+          );
+          return matchesStudent || matchesItems;
+        });
+
+        return (
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-5">
+            {/* Header */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-200 pb-4">
+              <div>
+                <h1 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                  <FileCheck className="w-5 h-5 text-blue-600" />
+                  <span>Attendance Update Request Queue</span>
+                </h1>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Review, approve, or partially approve student claims for missed lecture attendance with independent per-subject & faculty evaluation.
+                </p>
+              </div>
+
+              {/* Action trigger to reporting */}
+              <button
+                onClick={() => {
+                  setReportCriteria((prev) => ({ ...prev, request_status: 'pending', page: 1 }));
+                  onSelectTab('reports');
+                }}
+                className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg text-xs font-semibold border border-blue-200 transition"
+              >
+                <span>View & Export in Reporting Engine →</span>
+              </button>
             </div>
 
-            {/* Filter pills */}
-            <div className="flex items-center space-x-1 bg-slate-100 p-1 rounded-lg text-xs">
-              {(['ALL', 'pending', 'approved', 'rejected'] as const).map((st) => (
-                <button
-                  key={st}
-                  onClick={() => setRequestFilter(st)}
-                  className={`px-3 py-1 rounded font-semibold capitalize transition ${
-                    requestFilter === st ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {st}
-                </button>
-              ))}
-            </div>
-          </div>
+            {/* Quick Metrics Bar */}
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+              <button
+                onClick={() => setRequestFilter('ALL')}
+                className={`p-3 rounded-lg border text-left transition ${
+                  requestFilter === 'ALL' ? 'border-blue-500 bg-blue-50/50 shadow-xs' : 'border-slate-200 bg-slate-50 hover:bg-slate-100/70'
+                }`}
+              >
+                <div className="text-[11px] font-semibold text-slate-500 uppercase">Total Requests</div>
+                <div className="text-xl font-bold text-slate-900 mt-0.5">{totalCount}</div>
+              </button>
 
-          <div className="border border-slate-200 rounded-lg overflow-x-auto">
-            <table className="min-w-full text-xs divide-y divide-slate-200">
-              <thead className="bg-slate-50 text-slate-600 font-semibold">
-                <tr>
-                  <th className="py-2.5 px-3 text-left">Date Submitted</th>
-                  <th className="py-2.5 px-3 text-left">Student</th>
-                  <th className="py-2.5 px-3 text-left">PRN</th>
-                  <th className="py-2.5 px-3 text-center">Class</th>
-                  <th className="py-2.5 px-3 text-center">Items Count</th>
-                  <th className="py-2.5 px-3 text-center">Status</th>
-                  <th className="py-2.5 px-3 text-right">Review</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 bg-white">
-                {requests
-                  .filter((r) => requestFilter === 'ALL' || r.status === requestFilter)
-                  .map((req) => (
-                    <tr key={req.id} className="hover:bg-slate-50">
-                      <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap">
-                        {new Date(req.created_at).toLocaleDateString()}
-                      </td>
-                      <td className="py-2.5 px-3 font-semibold text-slate-900">{req.student_name}</td>
-                      <td className="py-2.5 px-3 font-mono font-bold text-slate-800">{req.student_prn}</td>
-                      <td className="py-2.5 px-3 text-center font-medium">
-                        Sem {req.semester}-{req.section}
-                      </td>
-                      <td className="py-2.5 px-3 text-center font-mono font-bold text-blue-700">
-                        {req.items?.length || 1}
-                      </td>
-                      <td className="py-2.5 px-3 text-center">
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                            req.status === 'approved'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : req.status === 'rejected'
-                              ? 'bg-rose-100 text-rose-800'
-                              : 'bg-amber-100 text-amber-800'
-                          }`}
-                        >
-                          {req.status}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3 text-right">
-                        <button
-                          onClick={() => {
-                            setSelectedRequest(req);
-                            setAdminCommentInput(req.admin_comment || '');
-                          }}
-                          className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-semibold shadow-sm"
-                        >
-                          Review →
-                        </button>
+              <button
+                onClick={() => setRequestFilter('pending')}
+                className={`p-3 rounded-lg border text-left transition ${
+                  requestFilter === 'pending' ? 'border-amber-500 bg-amber-50 shadow-xs ring-1 ring-amber-400' : 'border-slate-200 bg-amber-50/40 hover:bg-amber-50'
+                }`}
+              >
+                <div className="text-[11px] font-semibold text-amber-700 uppercase flex items-center justify-between">
+                  <span>Pending</span>
+                  <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+                </div>
+                <div className="text-xl font-bold text-amber-900 mt-0.5">{pendingCount}</div>
+              </button>
+
+              <button
+                onClick={() => setRequestFilter('approved')}
+                className={`p-3 rounded-lg border text-left transition ${
+                  requestFilter === 'approved' ? 'border-emerald-500 bg-emerald-50 shadow-xs ring-1 ring-emerald-400' : 'border-slate-200 bg-emerald-50/40 hover:bg-emerald-50'
+                }`}
+              >
+                <div className="text-[11px] font-semibold text-emerald-700 uppercase">Approved</div>
+                <div className="text-xl font-bold text-emerald-900 mt-0.5">{approvedCount}</div>
+              </button>
+
+              <button
+                onClick={() => setRequestFilter('partially_approved')}
+                className={`p-3 rounded-lg border text-left transition ${
+                  requestFilter === 'partially_approved' ? 'border-blue-500 bg-blue-50 shadow-xs ring-1 ring-blue-400' : 'border-slate-200 bg-blue-50/40 hover:bg-blue-50'
+                }`}
+              >
+                <div className="text-[11px] font-semibold text-blue-700 uppercase">Partial</div>
+                <div className="text-xl font-bold text-blue-900 mt-0.5">{partialCount}</div>
+              </button>
+
+              <button
+                onClick={() => setRequestFilter('rejected')}
+                className={`p-3 rounded-lg border text-left transition ${
+                  requestFilter === 'rejected' ? 'border-rose-500 bg-rose-50 shadow-xs ring-1 ring-rose-400' : 'border-slate-200 bg-rose-50/40 hover:bg-rose-50'
+                }`}
+              >
+                <div className="text-[11px] font-semibold text-rose-700 uppercase">Rejected</div>
+                <div className="text-xl font-bold text-rose-900 mt-0.5">{rejectedCount}</div>
+              </button>
+            </div>
+
+            {/* Filter pills & search */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+              <div className="relative flex-1 max-w-md">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  placeholder="Search by student name, PRN, subject, faculty..."
+                  value={requestSearch}
+                  onChange={(e) => setRequestSearch(e.target.value)}
+                  className="w-full text-xs pl-9 pr-3 py-2 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="flex items-center space-x-1 bg-slate-100 p-1 rounded-lg text-xs self-start sm:self-auto overflow-x-auto">
+                {(['ALL', 'pending', 'approved', 'partially_approved', 'rejected'] as const).map((st) => (
+                  <button
+                    key={st}
+                    onClick={() => setRequestFilter(st)}
+                    className={`px-3 py-1 rounded font-semibold capitalize transition whitespace-nowrap ${
+                      requestFilter === st ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {st.replace('_', ' ')}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Table */}
+            <div className="border border-slate-200 rounded-lg overflow-x-auto">
+              <table className="min-w-full text-xs divide-y divide-slate-200">
+                <thead className="bg-slate-50 text-slate-600 font-semibold">
+                  <tr>
+                    <th className="py-2.5 px-3 text-left">Date Submitted</th>
+                    <th className="py-2.5 px-3 text-left">Student</th>
+                    <th className="py-2.5 px-3 text-left">PRN</th>
+                    <th className="py-2.5 px-3 text-center">Class</th>
+                    <th className="py-2.5 px-3 text-left">Requested Lectures & Subjects</th>
+                    <th className="py-2.5 px-3 text-center">Current Att. %</th>
+                    <th className="py-2.5 px-3 text-center">Status</th>
+                    <th className="py-2.5 px-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {filteredQueue.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="py-8 text-center text-slate-400">
+                        No attendance update requests found matching your filter criteria.
                       </td>
                     </tr>
-                  ))}
-              </tbody>
-            </table>
+                  ) : (
+                    filteredQueue.map((req) => (
+                      <tr key={req.id} className="hover:bg-slate-50">
+                        <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap">
+                          {new Date(req.created_at).toLocaleDateString()}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <div className="font-semibold text-slate-900">{req.student_name}</div>
+                          {req.admin_comment && (
+                            <div className="text-[11px] text-slate-500 italic truncate max-w-xs" title={req.admin_comment}>
+                              Comment: {req.admin_comment}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono font-bold text-slate-800">{req.student_prn}</td>
+                        <td className="py-2.5 px-3 text-center font-medium whitespace-nowrap">
+                          Sem {req.semester}-{req.section}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <div className="flex flex-wrap gap-1 max-w-md">
+                            {req.items?.map((it, idx) => (
+                              <span
+                                key={idx}
+                                className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border ${
+                                  it.status === 'approved'
+                                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                    : it.status === 'rejected'
+                                    ? 'bg-rose-50 text-rose-800 border-rose-200'
+                                    : 'bg-slate-100 text-slate-700 border-slate-200'
+                                }`}
+                                title={`${it.subject_name} • ${it.faculty_name} (${it.date} ${it.start_time}-${it.end_time})`}
+                              >
+                                <span>{it.subject_name || 'Lecture'}</span>
+                                {it.status === 'approved' && <Check className="w-3 h-3 ml-1 text-emerald-600" />}
+                                {it.status === 'rejected' && <X className="w-3 h-3 ml-1 text-rose-600" />}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                          {req.current_attendance_percentage !== null && req.current_attendance_percentage !== undefined ? (
+                            <span
+                              className={`font-mono font-bold text-xs ${
+                                req.current_attendance_percentage >= 75 ? 'text-emerald-700' : 'text-rose-600'
+                              }`}
+                            >
+                              {req.current_attendance_percentage}%
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-slate-400 italic bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                              Not Entered
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                          <span
+                            className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${
+                              req.status === 'approved'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : req.status === 'partially_approved'
+                                ? 'bg-blue-100 text-blue-800'
+                                : req.status === 'rejected'
+                                ? 'bg-rose-100 text-rose-800'
+                                : 'bg-amber-100 text-amber-800'
+                            }`}
+                          >
+                            {req.status === 'partially_approved' ? 'Partial' : req.status}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-right whitespace-nowrap space-x-1.5">
+                          <button
+                            onClick={() => handleOpenReviewModal(req)}
+                            className="inline-flex items-center space-x-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow-xs transition"
+                          >
+                            <SlidersHorizontal className="w-3.5 h-3.5" />
+                            <span>Custom Review</span>
+                          </button>
+                          <button
+                            onClick={() => handleQuickReview(req, 'approved')}
+                            title="Quick 1-Click Approve All Items"
+                            className="p-1.5 text-emerald-700 hover:bg-emerald-100 rounded-lg transition"
+                          >
+                            <CheckCircle2 className="w-4 h-4 inline" />
+                          </button>
+                          <button
+                            onClick={() => handleQuickReview(req, 'rejected')}
+                            title="Quick 1-Click Reject"
+                            className="p-1.5 text-rose-600 hover:bg-rose-100 rounded-lg transition"
+                          >
+                            <XCircle className="w-4 h-4 inline" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* -------------------------------------------------- */}
       {/* TAB 7: POWERFUL REPORTING & EXPORTS (SECTIONS 26-34) */}
@@ -1213,7 +1518,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                   <span>SQL-First Multi-Filter Attendance Reporting Engine</span>
                 </h1>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Combine multiple parameterized filters. Queries execute with database filtering logic.
+                  Combine multiple parameterized filters. View and export students with pending or approved attendance update requests.
                 </p>
               </div>
 
@@ -1224,6 +1529,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                   onChange={(e) => setExportFormat(e.target.value as ExportFormatType)}
                   className="text-xs px-2.5 py-1.5 border border-slate-300 rounded-lg bg-white font-medium focus:ring-2 focus:ring-blue-500 focus:outline-none"
                 >
+                  <option value="attendance_requests_wise">Format 8: Student Requests (Pending / Approved) Excel</option>
                   <option value="faculty_wise">Format 5: Faculty-wise Excel</option>
                   <option value="student_wise">Format 1: Student-wise Excel</option>
                   <option value="event_wise">Format 2: Event-wise Excel</option>
@@ -1244,8 +1550,93 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
               </div>
             </div>
 
+            {/* Quick Request Status Filters */}
+            <div className="flex flex-wrap items-center gap-1.5 p-1.5 bg-slate-100 rounded-lg text-xs">
+              <span className="text-[11px] font-semibold text-slate-500 px-2 flex items-center gap-1">
+                <SlidersHorizontal className="w-3 h-3" /> Filter by Request:
+              </span>
+              <button
+                onClick={() => setReportCriteria({ ...reportCriteria, request_status: 'ALL', page: 1 })}
+                className={`px-3 py-1 rounded-md font-semibold transition ${
+                  !reportCriteria.request_status || reportCriteria.request_status === 'ALL'
+                    ? 'bg-white text-blue-700 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                All Records
+              </button>
+              <button
+                onClick={() => setReportCriteria({ ...reportCriteria, request_status: 'pending', page: 1 })}
+                className={`px-3 py-1 rounded-md font-semibold flex items-center space-x-1.5 transition ${
+                  reportCriteria.request_status === 'pending'
+                    ? 'bg-amber-500 text-white shadow-xs'
+                    : 'text-amber-800 bg-amber-50 hover:bg-amber-100'
+                }`}
+              >
+                <Clock className="w-3 h-3" />
+                <span>⏳ Pending Student Requests</span>
+              </button>
+              <button
+                onClick={() => setReportCriteria({ ...reportCriteria, request_status: 'approved', page: 1 })}
+                className={`px-3 py-1 rounded-md font-semibold flex items-center space-x-1.5 transition ${
+                  reportCriteria.request_status === 'approved'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-emerald-800 bg-emerald-50 hover:bg-emerald-100'
+                }`}
+              >
+                <Check className="w-3 h-3" />
+                <span>✅ Approved Requests</span>
+              </button>
+              <button
+                onClick={() => setReportCriteria({ ...reportCriteria, request_status: 'ANY_REQUEST', page: 1 })}
+                className={`px-3 py-1 rounded-md font-semibold transition ${
+                  reportCriteria.request_status === 'ANY_REQUEST'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                📋 Any Requested Attendance
+              </button>
+              <button
+                onClick={() => setReportCriteria({ ...reportCriteria, request_status: 'rejected', page: 1 })}
+                className={`px-3 py-1 rounded-md font-semibold transition ${
+                  reportCriteria.request_status === 'rejected'
+                    ? 'bg-rose-600 text-white shadow-xs'
+                    : 'text-rose-700 bg-rose-50 hover:bg-rose-100'
+                }`}
+              >
+                ❌ Rejected Claims
+              </button>
+            </div>
+
             {/* Filter Input Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+              {/* Request Status Dropdown */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  Attendance Request Status
+                </label>
+                <select
+                  value={reportCriteria.request_status || 'ALL'}
+                  onChange={(e) =>
+                    setReportCriteria({
+                      ...reportCriteria,
+                      request_status: e.target.value as any,
+                      page: 1,
+                    })
+                  }
+                  className="w-full p-2 border border-blue-300 rounded-lg bg-blue-50/40 font-semibold text-blue-900"
+                >
+                  <option value="ALL">All Records (Events & Requests)</option>
+                  <option value="pending">⏳ Pending Student Requests Only</option>
+                  <option value="approved">✅ Approved Requests Only</option>
+                  <option value="partially_approved">⚡ Partially Approved Only</option>
+                  <option value="rejected">❌ Rejected Requests Only</option>
+                  <option value="ANY_REQUEST">📋 Any Student Claim (Pending/Approved)</option>
+                  <option value="NONE">⚪ Standard Attendance (No Requests)</option>
+                </select>
+              </div>
+
               {/* Semester */}
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Semester</label>
@@ -1312,7 +1703,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
 
               {/* Event Title */}
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">Event Title</label>
+                <label className="block font-semibold text-slate-700 mb-1">Event / Activity Title</label>
                 <input
                   type="text"
                   placeholder="e.g. Engineers' Day"
@@ -1344,6 +1735,30 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                 />
               </div>
 
+              {/* PRN Filter */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">PRN</label>
+                <input
+                  type="text"
+                  placeholder="Search PRN..."
+                  value={reportCriteria.prn}
+                  onChange={(e) => setReportCriteria({ ...reportCriteria, prn: e.target.value, page: 1 })}
+                  className="w-full p-2 border border-slate-300 rounded-lg font-mono"
+                />
+              </div>
+
+              {/* Student Name */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Student Name</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Aditya"
+                  value={reportCriteria.student_name}
+                  onChange={(e) => setReportCriteria({ ...reportCriteria, student_name: e.target.value, page: 1 })}
+                  className="w-full p-2 border border-slate-300 rounded-lg"
+                />
+              </div>
+
               {/* Attendance % Condition */}
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Current Attendance %</label>
@@ -1358,48 +1773,33 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                   }
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white"
                 >
-                  <option value="ALL">All Percentages</option>
+                  <option value="ALL">All Records</option>
                   <option value="gte_75">Eligible (&ge; 75%)</option>
                   <option value="lt_75">Defaulter (&lt; 75%)</option>
                   <option value="between">Between 60% and 80%</option>
+                  <option value="not_entered">Not Entered / Unspecified</option>
+                  <option value="entered">Entered / Recorded Only</option>
                 </select>
               </div>
 
-              {/* PRN Filter */}
+              {/* Has Attendance Request boolean */}
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">PRN</label>
-                <input
-                  type="text"
-                  placeholder="e.g. 24070521256"
-                  value={reportCriteria.prn}
-                  onChange={(e) => setReportCriteria({ ...reportCriteria, prn: e.target.value, page: 1 })}
-                  className="w-full p-2 border border-slate-300 rounded-lg font-mono"
-                />
-              </div>
-
-              {/* Has Attendance Request */}
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Has Attendance Request</label>
+                <label className="block font-semibold text-slate-700 mb-1">Has Request Filed?</label>
                 <select
-                  value={String(reportCriteria.has_attendance_request)}
-                  onChange={(e) => setReportCriteria({ ...reportCriteria, has_attendance_request: e.target.value === 'true', page: 1 })}
+                  value={String(reportCriteria.has_attendance_request ?? 'ALL')}
+                  onChange={(e) =>
+                    setReportCriteria({
+                      ...reportCriteria,
+                      has_attendance_request: e.target.value === 'ALL' ? 'ALL' : e.target.value === 'true',
+                      page: 1,
+                    })
+                  }
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white"
                 >
-                  <option value="false">No</option>
-                  <option value="true">Yes</option>
+                  <option value="ALL">All Records</option>
+                  <option value="true">Yes (Has Request)</option>
+                  <option value="false">No (Standard Only)</option>
                 </select>
-              </div>
-
-              {/* Student Name */}
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Student Name</label>
-                <input
-                  type="text"
-                  placeholder="e.g. Aditya"
-                  value={reportCriteria.student_name}
-                  onChange={(e) => setReportCriteria({ ...reportCriteria, student_name: e.target.value, page: 1 })}
-                  className="w-full p-2 border border-slate-300 rounded-lg"
-                />
               </div>
             </div>
 
@@ -1420,6 +1820,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                     date_to: '',
                     prn: '',
                     student_name: '',
+                    request_status: 'ALL',
+                    has_attendance_request: 'ALL',
                     attendance_operator: 'ALL',
                     sortBy: 'date',
                     sortOrder: 'desc',
@@ -1427,9 +1829,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                     pageSize: 25,
                   })
                 }
-                className="text-xs text-slate-500 hover:text-slate-800"
+                className="text-xs text-slate-500 hover:text-slate-800 font-medium"
               >
-                Reset Filters
+                Reset All Filters
               </button>
             </div>
           </div>
@@ -1470,9 +1872,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                         <ArrowUpDown className="w-3 h-3 text-slate-400" />
                       </div>
                     </th>
-                    <th className="py-2.5 px-3 text-center">Sem</th>
-                    <th className="py-2.5 px-3 text-center">Sec</th>
-                    <th className="py-2.5 px-3 text-left">Event</th>
+                    <th className="py-2.5 px-3 text-center">Class</th>
+                    <th className="py-2.5 px-3 text-left">Event / Activity</th>
                     <th
                       onClick={() =>
                         setReportCriteria({
@@ -1488,8 +1889,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                         <ArrowUpDown className="w-3 h-3 text-slate-400" />
                       </div>
                     </th>
-                    <th className="py-2.5 px-3 text-left">Faculty</th>
-                    <th className="py-2.5 px-3 text-left">Subject</th>
+                    <th className="py-2.5 px-3 text-left">Subject & Faculty</th>
+                    <th className="py-2.5 px-3 text-center">Request Status</th>
                     <th
                       onClick={() =>
                         setReportCriteria({
@@ -1510,37 +1911,85 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                 <tbody className="divide-y divide-slate-100 bg-white">
                   {reportLoading ? (
                     <tr>
-                      <td colSpan={9} className="py-8 text-center text-slate-400">
+                      <td colSpan={8} className="py-8 text-center text-slate-400">
                         Querying database records...
                       </td>
                     </tr>
                   ) : reportRows.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="py-8 text-center text-slate-400">
-                        No records match the active filter criteria.
+                      <td colSpan={8} className="py-8 text-center text-slate-400">
+                        No records match the active filter criteria. Adjust your filters or switch view.
                       </td>
                     </tr>
                   ) : (
                     reportRows.map((r) => (
                       <tr key={r.id} className="hover:bg-slate-50">
                         <td className="py-2.5 px-3 font-mono font-bold text-slate-900">{r.prn}</td>
-                        <td className="py-2.5 px-3 font-semibold text-slate-800">{r.student_name}</td>
-                        <td className="py-2.5 px-3 text-center">{r.semester}</td>
-                        <td className="py-2.5 px-3 text-center font-semibold">{r.section}</td>
-                        <td className="py-2.5 px-3 text-slate-800 font-medium">{r.event_title}</td>
+                        <td className="py-2.5 px-3">
+                          <div className="font-semibold text-slate-800">{r.student_name}</div>
+                          {r.request_reason && (
+                            <div className="text-[11px] text-slate-500 italic max-w-xs truncate" title={r.request_reason}>
+                              Reason: "{r.request_reason}"
+                            </div>
+                          )}
+                          {r.admin_comment && (
+                            <div className="text-[10px] text-blue-700 font-medium truncate max-w-xs" title={r.admin_comment}>
+                              Admin note: {r.admin_comment}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                          Sem {r.semester}-{r.section}
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-800 font-medium">
+                          <div>{r.event_title}</div>
+                          {r.venue && <div className="text-[10px] text-slate-400">{r.venue}</div>}
+                        </td>
                         <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap">
                           {r.date} ({r.time})
                         </td>
-                        <td className="py-2.5 px-3 text-slate-700">{r.faculty_name || '—'}</td>
-                        <td className="py-2.5 px-3 text-slate-700">{r.subject_name || '—'}</td>
-                        <td className="py-2.5 px-3 text-right">
+                        <td className="py-2.5 px-3 text-slate-700">
+                          <div className="font-medium text-slate-900">{r.subject_name || '—'}</div>
+                          <div className="text-[11px] text-slate-500">{r.faculty_name || '—'}</div>
+                        </td>
+                        <td className="py-2.5 px-3 text-center whitespace-nowrap">
                           <span
-                            className={`font-mono font-bold ${
-                              r.current_attendance_percentage >= 75 ? 'text-emerald-700' : 'text-rose-600'
+                            className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase inline-flex items-center space-x-1 ${
+                              r.request_status === 'approved'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : r.request_status === 'partially_approved'
+                                ? 'bg-blue-100 text-blue-800'
+                                : r.request_status === 'rejected'
+                                ? 'bg-rose-100 text-rose-800'
+                                : r.request_status === 'pending'
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-slate-100 text-slate-500'
                             }`}
                           >
-                            {r.current_attendance_percentage}%
+                            {r.request_status === 'approved' && <Check className="w-3 h-3 text-emerald-600" />}
+                            {r.request_status === 'pending' && <Clock className="w-3 h-3 text-amber-600" />}
+                            {r.request_status === 'rejected' && <X className="w-3 h-3 text-rose-600" />}
+                            <span>
+                              {r.request_status && r.request_status !== 'none'
+                                ? r.request_status.replace('_', ' ')
+                                : 'Standard'}
+                            </span>
                           </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                          {r.current_attendance_percentage !== null && r.current_attendance_percentage !== undefined ? (
+                            <span
+                              className={`font-mono font-bold ${
+                                r.current_attendance_percentage >= 75 ? 'text-emerald-700' : 'text-rose-600'
+                              }`}
+                            >
+                              {r.current_attendance_percentage}%
+                            </span>
+                          ) : (
+                            <span className="text-[11px] text-slate-400 italic bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                              Not Entered
+                            </span>
+                          )}
                         </td>
                       </tr>
                     ))
@@ -2113,7 +2562,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                   type="text"
                   required
                   disabled={!!editingStudent}
-                  placeholder="e.g. 24070521001"
+                  placeholder="Enter Student PRN"
                   value={studentForm.prn}
                   onChange={(e) => setStudentForm({ ...studentForm, prn: e.target.value })}
                   className="w-full p-2 border border-slate-300 rounded-lg font-mono disabled:bg-slate-100"
@@ -2331,92 +2780,303 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
       )}
 
       {/* -------------------------------------------------- */}
-      {/* MODAL: REVIEW STUDENT REQUEST */}
+      {/* MODAL: CUSTOM REVIEW & APPROVAL OF STUDENT REQUEST */}
       {/* -------------------------------------------------- */}
       {selectedRequest && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl border border-slate-200 shadow-2xl max-w-2xl w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-2xl max-w-3xl w-full p-6 space-y-5 max-h-[90vh] overflow-y-auto">
+            {/* Modal Header */}
+            <div className="flex items-start justify-between border-b border-slate-200 pb-3">
               <div>
-                <h3 className="text-base font-bold text-slate-900">Review Attendance Update Request</h3>
-                <p className="text-xs text-slate-500">
-                  Student: {selectedRequest.student_name} (PRN: {selectedRequest.student_prn})
+                <div className="flex items-center space-x-2">
+                  <h3 className="text-base font-bold text-slate-900">
+                    Custom Attendance Request Review & Approval
+                  </h3>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                      reviewOverallStatus === 'approved'
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : reviewOverallStatus === 'partially_approved'
+                        ? 'bg-blue-100 text-blue-800'
+                        : reviewOverallStatus === 'rejected'
+                        ? 'bg-rose-100 text-rose-800'
+                        : 'bg-amber-100 text-amber-800'
+                    }`}
+                  >
+                    {reviewOverallStatus.replace('_', ' ')}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-1">
+                  Student: <strong className="text-slate-800">{selectedRequest.student_name}</strong> • PRN:{' '}
+                  <span className="font-mono font-bold text-slate-800">{selectedRequest.student_prn}</span> • Sem{' '}
+                  {selectedRequest.semester}-{selectedRequest.section}
                 </p>
               </div>
               <button
-                onClick={() => setSelectedRequest(null)}
-                className="text-slate-400 hover:text-slate-600 font-bold"
+                onClick={() => {
+                  setSelectedRequest(null);
+                  setReviewItems([]);
+                  setReviewAttendancePct('');
+                }}
+                className="text-slate-400 hover:text-slate-600 font-bold text-lg p-1"
               >
                 ×
               </button>
             </div>
 
-            {/* Request items */}
+            {/* Student Current Attendance Percentage Section */}
+            <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div>
+                <label className="font-semibold text-slate-800 block">
+                  Student Current Attendance Percentage:
+                </label>
+                <p className="text-[11px] text-slate-500">
+                  {selectedRequest.current_attendance_percentage !== null && selectedRequest.current_attendance_percentage !== undefined
+                    ? `Student entered: ${selectedRequest.current_attendance_percentage}%`
+                    : 'Student did not enter percentage ("Not Entered")'}
+                </p>
+              </div>
+              <div className="flex items-center space-x-2">
+                <span className="text-[11px] text-slate-500 font-medium">Verified / Set %:</span>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  max="100"
+                  placeholder="e.g. 78.5"
+                  value={reviewAttendancePct}
+                  onChange={(e) => setReviewAttendancePct(e.target.value)}
+                  className="w-24 px-2 py-1 text-xs border border-slate-300 rounded font-mono bg-white focus:ring-1 focus:ring-blue-500"
+                />
+                <span className="font-bold text-slate-600">%</span>
+                {reviewAttendancePct !== '' && (
+                  <button
+                    type="button"
+                    onClick={() => setReviewAttendancePct('')}
+                    className="text-[10px] text-slate-400 hover:text-rose-600 underline"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Batch Controls Bar */}
+            <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 bg-slate-50 rounded-lg border border-slate-200 text-xs">
+              <span className="font-semibold text-slate-600">
+                Item-level Evaluation ({reviewItems.length} requested lecture{reviewItems.length > 1 ? 's' : ''}):
+              </span>
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={handleApproveAllItems}
+                  className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-medium shadow-2xs transition"
+                >
+                  ✓ Approve All
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRejectAllItems}
+                  className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded font-medium shadow-2xs transition"
+                >
+                  ✕ Reject All
+                </button>
+                <button
+                  type="button"
+                  onClick={handleResetAllToPending}
+                  className="px-2.5 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded font-medium transition"
+                >
+                  ↺ Reset
+                </button>
+              </div>
+            </div>
+
+            {/* Request Items List */}
             <div className="space-y-3">
-              <h4 className="text-xs font-bold text-slate-700 uppercase">Requested Items ({selectedRequest.items?.length})</h4>
-              <div className="space-y-2">
-                {selectedRequest.items?.map((it, idx) => (
-                  <div key={idx} className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs space-y-1">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-blue-900">Item #{idx + 1}</span>
-                      <span className="text-slate-500">
+              {reviewItems.map((it, idx) => (
+                <div
+                  key={idx}
+                  className={`p-3.5 rounded-lg border text-xs space-y-2.5 transition ${
+                    it.status === 'approved'
+                      ? 'bg-emerald-50/40 border-emerald-200'
+                      : it.status === 'rejected'
+                      ? 'bg-rose-50/40 border-rose-200'
+                      : 'bg-slate-50 border-slate-200'
+                  }`}
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200/70 pb-2">
+                    <div className="flex items-center space-x-2">
+                      <span className="font-bold text-blue-900 bg-blue-100/70 px-2 py-0.5 rounded text-[11px]">
+                        Lecture #{idx + 1}
+                      </span>
+                      <span className="font-semibold text-slate-800 text-xs">{it.subject_name || 'Subject'}</span>
+                    </div>
+
+                    <div className="flex items-center space-x-1.5 self-end sm:self-auto">
+                      <button
+                        type="button"
+                        onClick={() => handleItemStatusChange(idx, 'approved')}
+                        className={`px-2.5 py-1 rounded text-[11px] font-bold uppercase transition flex items-center space-x-1 ${
+                          it.status === 'approved'
+                            ? 'bg-emerald-600 text-white shadow-2xs'
+                            : 'bg-white border border-slate-300 text-slate-600 hover:bg-emerald-50 hover:text-emerald-700'
+                        }`}
+                      >
+                        <Check className="w-3 h-3" />
+                        <span>Approve</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleItemStatusChange(idx, 'rejected')}
+                        className={`px-2.5 py-1 rounded text-[11px] font-bold uppercase transition flex items-center space-x-1 ${
+                          it.status === 'rejected'
+                            ? 'bg-rose-600 text-white shadow-2xs'
+                            : 'bg-white border border-slate-300 text-slate-600 hover:bg-rose-50 hover:text-rose-700'
+                        }`}
+                      >
+                        <X className="w-3 h-3" />
+                        <span>Reject</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleItemStatusChange(idx, 'pending')}
+                        className={`px-2 py-1 rounded text-[11px] font-medium transition ${
+                          it.status === 'pending'
+                            ? 'bg-amber-500 text-white'
+                            : 'bg-white border border-slate-200 text-slate-500 hover:bg-amber-50'
+                        }`}
+                      >
+                        Pending
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-slate-600">
+                    <div>
+                      <span className="text-slate-400 block text-[10px] uppercase font-semibold">Faculty:</span>
+                      <strong className="text-slate-800">{it.faculty_name || 'Assigned Faculty'}</strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[10px] uppercase font-semibold">Date & Time:</span>
+                      <span>
                         {it.date} ({it.start_time} - {it.end_time})
                       </span>
                     </div>
                     <div>
-                      <span className="text-slate-500">Subject:</span> <strong>{it.subject_name}</strong>
+                      <span className="text-slate-400 block text-[10px] uppercase font-semibold">Event / Activity:</span>
+                      <span className="text-slate-800">{it.event_title || 'College Event'}</span>
                     </div>
-                    <div>
-                      <span className="text-slate-500">Faculty:</span> <strong>{it.faculty_name}</strong>
-                    </div>
-                    <div>
-                      <span className="text-slate-500">Activity:</span> {it.event_title}
-                    </div>
-                    {it.reason && (
-                      <div className="text-slate-600 italic">
-                        "{it.reason}"
-                      </div>
-                    )}
                   </div>
-                ))}
+
+                  {it.reason && (
+                    <div className="p-2 bg-white/70 rounded border border-slate-200 text-slate-700">
+                      <span className="font-semibold text-slate-500">Student Reason:</span> "{it.reason}"
+                    </div>
+                  )}
+
+                  <div>
+                    <input
+                      type="text"
+                      placeholder="Optional admin note for this lecture (e.g. Verified with faculty, Lab duty granted)"
+                      value={it.admin_note || ''}
+                      onChange={(e) => handleItemNoteChange(idx, e.target.value)}
+                      className="w-full text-xs p-1.5 border border-slate-200 rounded-md bg-white focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Overall Status & Justification */}
+            <div className="p-3.5 bg-slate-50 rounded-lg border border-slate-200 space-y-3 text-xs">
+              <div>
+                <label className="block font-semibold text-slate-800 mb-1">
+                  Overall Request Outcome Decision
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {(['approved', 'partially_approved', 'rejected', 'pending'] as const).map((outcome) => (
+                    <button
+                      key={outcome}
+                      type="button"
+                      onClick={() => setReviewOverallStatus(outcome)}
+                      className={`p-2 rounded-lg border text-center font-bold text-xs capitalize transition ${
+                        reviewOverallStatus === outcome
+                          ? outcome === 'approved'
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                            : outcome === 'partially_approved'
+                            ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                            : outcome === 'rejected'
+                            ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
+                            : 'bg-amber-500 text-white border-amber-500 shadow-xs'
+                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                      }`}
+                    >
+                      {outcome.replace('_', ' ')}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-semibold text-slate-800">
+                    Administrator Review Justification / Official Note
+                  </label>
+                  <span className="text-[10px] text-slate-400">Recorded in Immutable Audit Log</span>
+                </div>
+                <textarea
+                  rows={2}
+                  placeholder="e.g. Verified with event coordinator. Attendance granted under academic activity concession."
+                  value={adminCommentInput}
+                  onChange={(e) => setAdminCommentInput(e.target.value)}
+                  className="w-full p-2 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none text-xs"
+                />
+
+                {/* Quick Presets */}
+                <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                  <span className="text-[10px] text-slate-400 font-semibold">Quick Presets:</span>
+                  {[
+                    'Verified with Event Coordinator & Faculty',
+                    'College representation duty leave granted',
+                    'Timetable clash attendance approved',
+                    'Medical proof verified by cell',
+                    'Insufficient proof provided / Rejected',
+                  ].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setAdminCommentInput(preset)}
+                      className="px-2 py-0.5 bg-white hover:bg-slate-200 border border-slate-200 rounded text-[10px] text-slate-600 transition"
+                    >
+                      + {preset}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
-            {/* Admin comment input */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Admin Review Comment / Justification
-              </label>
-              <textarea
-                rows={2}
-                placeholder="e.g. Verified with event coordinator / Lecture clash attendance granted."
-                value={adminCommentInput}
-                onChange={(e) => setAdminCommentInput(e.target.value)}
-                className="w-full text-xs p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
-              />
-            </div>
-
+            {/* Modal Actions */}
             <div className="flex items-center justify-end space-x-3 pt-3 border-t border-slate-200">
               <button
                 type="button"
-                onClick={() => setSelectedRequest(null)}
-                className="px-4 py-2 text-xs text-slate-600 hover:text-slate-800"
+                onClick={() => {
+                  setSelectedRequest(null);
+                  setReviewItems([]);
+                }}
+                className="px-4 py-2 text-xs text-slate-600 hover:text-slate-800 font-semibold"
               >
-                Close
+                Cancel
               </button>
               <button
                 type="button"
-                onClick={() => handleReviewRequest('rejected')}
-                className="px-4 py-2 text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white rounded-lg shadow"
+                disabled={loading}
+                onClick={handleSaveCustomReview}
+                className="px-5 py-2 text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white rounded-lg shadow transition flex items-center space-x-1.5 disabled:opacity-50"
               >
-                Reject Request
-              </button>
-              <button
-                type="button"
-                onClick={() => handleReviewRequest('approved')}
-                className="px-4 py-2 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg shadow"
-              >
-                Approve Request
+                {loading && <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>}
+                <span>Finalize & Save Review</span>
               </button>
             </div>
           </div>

@@ -9,13 +9,40 @@ export type ExportFormatType =
   | 'semester_wise'
   | 'section_wise'
   | 'faculty_wise'
+  | 'attendance_requests_wise'
   | 'event_attendance_sheet'
   | 'student_history';
+
+function formatAttendancePercentage(pct?: number | null): string {
+  if (pct === null || pct === undefined || isNaN(Number(pct))) {
+    return 'Not Entered';
+  }
+  return `${pct}%`;
+}
 
 export function exportReportsToExcel(rows: ReportRow[], format: ExportFormatType, filenamePrefix: string = 'attendance_report') {
   let exportData: Record<string, any>[] = [];
 
   switch (format) {
+    case 'attendance_requests_wise':
+      exportData = rows.map((r, i) => ({
+        'Sr. No': i + 1,
+        PRN: r.prn,
+        'Student Name': r.student_name,
+        Semester: r.semester,
+        Section: r.section,
+        'Request Status': (r.request_status || 'N/A').toUpperCase(),
+        Date: r.date,
+        Time: r.time,
+        Subject: r.subject_name || 'N/A',
+        Faculty: r.faculty_name || 'N/A',
+        'Event / Activity': r.event_title,
+        'Student Reason': r.request_reason || 'N/A',
+        'Admin Comment': r.admin_comment || 'N/A',
+        'Current Attendance %': formatAttendancePercentage(r.current_attendance_percentage),
+      }));
+      break;
+
     case 'faculty_wise':
       exportData = rows.map((r) => ({
         Faculty: r.faculty_name || 'N/A',
@@ -27,7 +54,8 @@ export function exportReportsToExcel(rows: ReportRow[], format: ExportFormatType
         Event: r.event_title,
         Date: r.date,
         Time: r.time,
-        'Current Attendance %': `${r.current_attendance_percentage}%`,
+        'Request Status': r.request_status && r.request_status !== 'none' ? r.request_status.toUpperCase() : 'Standard',
+        'Current Attendance %': formatAttendancePercentage(r.current_attendance_percentage),
       }));
       break;
 
@@ -41,7 +69,8 @@ export function exportReportsToExcel(rows: ReportRow[], format: ExportFormatType
         Name: r.student_name,
         Semester: r.semester,
         Section: r.section,
-        'Current Attendance %': `${r.current_attendance_percentage}%`,
+        'Request Status': r.request_status && r.request_status !== 'none' ? r.request_status.toUpperCase() : 'Standard',
+        'Current Attendance %': formatAttendancePercentage(r.current_attendance_percentage),
       }));
       break;
 
@@ -54,7 +83,8 @@ export function exportReportsToExcel(rows: ReportRow[], format: ExportFormatType
         Event: r.event_title,
         Date: r.date,
         Time: r.time,
-        'Current Attendance %': `${r.current_attendance_percentage}%`,
+        'Request Status': r.request_status && r.request_status !== 'none' ? r.request_status.toUpperCase() : 'Standard',
+        'Current Attendance %': formatAttendancePercentage(r.current_attendance_percentage),
       }));
       break;
 
@@ -67,7 +97,8 @@ export function exportReportsToExcel(rows: ReportRow[], format: ExportFormatType
         Event: r.event_title,
         Date: r.date,
         Time: r.time,
-        'Current Attendance %': `${r.current_attendance_percentage}%`,
+        'Request Status': r.request_status && r.request_status !== 'none' ? r.request_status.toUpperCase() : 'Standard',
+        'Current Attendance %': formatAttendancePercentage(r.current_attendance_percentage),
       }));
       break;
 
@@ -78,7 +109,8 @@ export function exportReportsToExcel(rows: ReportRow[], format: ExportFormatType
         Semester: r.semester,
         Section: r.section,
         Name: r.student_name,
-        'Current Attendance %': `${r.current_attendance_percentage}%`,
+        'Request Status': r.request_status && r.request_status !== 'none' ? r.request_status.toUpperCase() : 'Standard',
+        'Current Attendance %': formatAttendancePercentage(r.current_attendance_percentage),
         Signature: '',
       }));
       break;
@@ -94,7 +126,10 @@ export function exportReportsToExcel(rows: ReportRow[], format: ExportFormatType
         Event: r.event_title,
         Date: r.date,
         Time: r.time,
-        'Current Attendance %': `${r.current_attendance_percentage}%`,
+        Subject: r.subject_name || 'N/A',
+        Faculty: r.faculty_name || 'N/A',
+        'Request Status': r.request_status && r.request_status !== 'none' ? r.request_status.toUpperCase() : 'Standard',
+        'Current Attendance %': formatAttendancePercentage(r.current_attendance_percentage),
       }));
       break;
   }
@@ -177,7 +212,7 @@ export function generateEventAttendancePDF(event: EventRecord, attendees: EventA
     att.semester,
     att.section,
     att.student_name,
-    `${att.current_attendance_percentage}%`,
+    formatAttendancePercentage(att.current_attendance_percentage),
     '', // Signature column
   ]);
 
