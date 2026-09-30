@@ -8,8 +8,9 @@ interface LoginScreenProps {
 }
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
-  const [selectedRole, setSelectedRole] = useState<UserRole>('ADMIN');
-  const [identifier, setIdentifier] = useState('admin.academic');
+  const [selectedRole, setSelectedRole] = useState<UserRole>('STUDENT');
+  const [studentLoginMode, setStudentLoginMode] = useState<'universal' | 'prn'>('universal');
+  const [identifier, setIdentifier] = useState('student.universal');
   const [password, setPassword] = useState('Password123!');
   const [studentsList, setStudentsList] = useState<Student[]>([]);
   const [loading, setLoading] = useState(false);
@@ -41,7 +42,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
       setIdentifier('org.vp');
       setPassword('Password123!');
     } else {
-      if (studentsList.length > 0) {
+      if (studentLoginMode === 'universal') {
+        setIdentifier('student.universal');
+        setPassword('Password123!');
+      } else if (studentsList.length > 0) {
         const first = studentsList[0];
         const firstName = first.name.split(/\s+/)[0].toLowerCase();
         const last3 = first.prn.slice(-3);
@@ -156,6 +160,69 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
             </div>
           </div>
 
+          {/* Student Sub-Mode Toggle (Universal vs PRN) */}
+          {selectedRole === 'STUDENT' && (
+            <div className="p-3 bg-blue-50/70 border border-blue-200/90 rounded-xl space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-blue-950 uppercase tracking-wide">
+                  Student Portal Access Mode
+                </span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-100 text-blue-900 font-semibold border border-blue-200">
+                  Universal Request Mode
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5 p-1 bg-white rounded-lg border border-blue-200">
+                <button
+                  type="button"
+                  id="mode-universal-student-btn"
+                  onClick={() => {
+                    setStudentLoginMode('universal');
+                    setIdentifier('student.universal');
+                    setPassword('Password123!');
+                    setErrorMessage(null);
+                  }}
+                  className={`py-1.5 px-2 text-xs font-semibold rounded-md transition text-center cursor-pointer ${
+                    studentLoginMode === 'universal'
+                      ? 'bg-blue-900 text-white shadow-xs'
+                      : 'text-blue-900 hover:bg-blue-50'
+                  }`}
+                >
+                  Universal Student Login
+                </button>
+                <button
+                  type="button"
+                  id="mode-prn-student-btn"
+                  onClick={() => {
+                    setStudentLoginMode('prn');
+                    if (studentsList.length > 0) {
+                      const first = studentsList[0];
+                      const firstName = first.name.split(/\s+/)[0].toLowerCase();
+                      const last3 = first.prn.slice(-3);
+                      setIdentifier(first.prn);
+                      setPassword(`${firstName}.${last3}`);
+                    } else {
+                      setIdentifier('');
+                      setPassword('');
+                    }
+                    setErrorMessage(null);
+                  }}
+                  className={`py-1.5 px-2 text-xs font-semibold rounded-md transition text-center cursor-pointer ${
+                    studentLoginMode === 'prn'
+                      ? 'bg-blue-900 text-white shadow-xs'
+                      : 'text-blue-900 hover:bg-blue-50'
+                  }`}
+                >
+                  Specific Student (PRN)
+                </button>
+              </div>
+              <p className="text-[11px] text-blue-800 leading-tight">
+                {studentLoginMode === 'universal'
+                  ? 'Universal Student Mode allows creating and updating attendance requests on behalf of ANY student using student name or PRN search autocomplete.'
+                  : 'Individual student login using assigned Permanent Registration Number (PRN).'}
+              </p>
+            </div>
+          )}
+
           {/* Error Message Banner */}
           {errorMessage && (
             <div className="p-3 bg-rose-50 border border-rose-200/90 rounded-lg text-rose-800 text-xs flex items-start space-x-2">
@@ -168,13 +235,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
           )}
 
           {/* Notice when student selected but students collection is empty */}
-          {selectedRole === 'STUDENT' && studentsList.length === 0 && !dbLoading && (
+          {selectedRole === 'STUDENT' && studentLoginMode === 'prn' && studentsList.length === 0 && !dbLoading && (
             <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-lg text-amber-900 text-xs flex items-start space-x-2">
               <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
               <div>
                 <span className="font-semibold block">Awaiting Student Master Upload</span>
                 <p className="mt-0.5 text-amber-800">
-                  The database has been cleared. Academic Admin must log in first to upload the Student Master list before students can sign in.
+                  No individual student PRNs registered yet. You can sign in using Universal Student Login, or Academic Admin can upload the Student Master list.
                 </p>
               </div>
             </div>
@@ -184,7 +251,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
           <form onSubmit={handleFormSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
-                {selectedRole === 'STUDENT' ? 'Student Permanent Registration No. (PRN)' : 'Username'}
+                {selectedRole === 'STUDENT' && studentLoginMode === 'prn'
+                  ? 'Student Permanent Registration No. (PRN)'
+                  : 'Username'}
               </label>
               <input
                 type="text"
@@ -192,7 +261,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 required
                 placeholder={
                   selectedRole === 'STUDENT'
-                    ? 'Enter your PRN'
+                    ? studentLoginMode === 'universal'
+                      ? 'student.universal'
+                      : 'Enter your PRN'
                     : selectedRole === 'ORGANISER'
                     ? 'org.vp'
                     : 'admin.academic'
@@ -208,7 +279,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 {selectedRole === 'ORGANISER' && (
                   <span>Default username: <code className="font-mono text-slate-700 font-semibold">org.vp</code></span>
                 )}
-                {selectedRole === 'STUDENT' && (
+                {selectedRole === 'STUDENT' && studentLoginMode === 'universal' && (
+                  <span>Universal login username: <code className="font-mono text-slate-700 font-semibold">student.universal</code></span>
+                )}
+                {selectedRole === 'STUDENT' && studentLoginMode === 'prn' && (
                   <span>Enter your assigned PRN number</span>
                 )}
               </div>
@@ -224,7 +298,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder={
-                    selectedRole === 'STUDENT'
+                    selectedRole === 'STUDENT' && studentLoginMode === 'prn'
                       ? 'Format: {firstname}.{prn last 3 digits}'
                       : 'Password'
                   }
@@ -233,7 +307,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 <Lock className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-2.5" />
               </div>
               <div className="mt-1 text-[11px] text-slate-500">
-                {selectedRole === 'STUDENT' ? (
+                {selectedRole === 'STUDENT' && studentLoginMode === 'prn' ? (
                   <span>Formula: <code className="font-mono text-slate-700 font-semibold">{'{firstname}.{last 3 digits of PRN}'}</code></span>
                 ) : (
                   <span>Default password: <code className="font-mono text-slate-700 font-semibold">Password123!</code></span>
@@ -251,7 +325,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 <span>Authenticating with Database...</span>
               ) : (
                 <>
-                  <span>Sign In to ERP Portal</span>
+                  <span>
+                    {selectedRole === 'STUDENT' && studentLoginMode === 'universal'
+                      ? 'Sign In as Universal Student Portal'
+                      : 'Sign In to ERP Portal'}
+                  </span>
                   <ArrowRight className="w-4 h-4" />
                 </>
               )}
@@ -268,6 +346,32 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                id="quick-fill-universal-student-btn"
+                onClick={() => {
+                  setSelectedRole('STUDENT');
+                  setStudentLoginMode('universal');
+                  setIdentifier('student.universal');
+                  setPassword('Password123!');
+                  setErrorMessage(null);
+                }}
+                className="text-left px-2.5 py-1.5 rounded-lg bg-blue-50/80 hover:bg-blue-100/70 border border-blue-200 text-xs transition"
+              >
+                <div className="font-medium text-blue-900 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <GraduationCap className="w-3.5 h-3.5 text-blue-700" />
+                    <span>Universal Student</span>
+                  </span>
+                  <span className="text-[9px] px-1 py-0.2 bg-blue-200/80 text-blue-900 rounded font-bold uppercase">
+                    Any Student
+                  </span>
+                </div>
+                <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                  student.universal • Password123!
+                </div>
+              </button>
+
               <button
                 type="button"
                 id="quick-fill-admin-btn"
@@ -307,15 +411,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                   org.vp • Password123!
                 </div>
               </button>
-            </div>
 
-            {studentsList.length > 0 && (
-              <div className="mt-2">
+              {studentsList.length > 0 && (
                 <button
                   type="button"
                   id="quick-fill-student-btn"
                   onClick={() => {
                     setSelectedRole('STUDENT');
+                    setStudentLoginMode('prn');
                     const first = studentsList[0];
                     const firstName = first.name.split(/\s+/)[0].toLowerCase();
                     const last3 = first.prn.slice(-3);
@@ -323,21 +426,21 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                     setPassword(`${firstName}.${last3}`);
                     setErrorMessage(null);
                   }}
-                  className="w-full text-left px-2.5 py-1.5 rounded-lg bg-blue-50/60 hover:bg-blue-50 border border-blue-200 text-xs transition"
+                  className="text-left px-2.5 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-xs transition"
                 >
-                  <div className="font-medium text-blue-900 flex items-center justify-between">
+                  <div className="font-medium text-slate-800 flex items-center justify-between">
                     <span className="flex items-center gap-1.5">
                       <GraduationCap className="w-3.5 h-3.5 text-blue-700" />
-                      <span>First Enrolled Student ({studentsList[0].name})</span>
+                      <span className="truncate max-w-[120px]">{studentsList[0].name}</span>
                     </span>
-                    <span className="text-[10px] font-semibold text-blue-700">Autofill →</span>
+                    <span className="text-[9px] text-slate-500 font-mono">PRN</span>
                   </div>
                   <div className="text-[10px] text-slate-500 font-mono mt-0.5">
-                    PRN: {studentsList[0].prn} • Password: {studentsList[0].name.split(/\s+/)[0].toLowerCase()}.{studentsList[0].prn.slice(-3)}
+                    {studentsList[0].prn} • {studentsList[0].name.split(/\s+/)[0].toLowerCase()}.{studentsList[0].prn.slice(-3)}
                   </div>
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
 

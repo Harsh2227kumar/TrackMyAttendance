@@ -485,7 +485,7 @@ export async function updateSingleAttendancePercentage(
 export async function getAttendanceRequests(studentIdFilter?: string): Promise<AttendanceRequest[]> {
   try {
     let q;
-    if (studentIdFilter) {
+    if (studentIdFilter && studentIdFilter !== 'student-universal') {
       q = query(collection(db, 'attendance_requests'), where('student_id', '==', studentIdFilter));
     } else {
       q = query(collection(db, 'attendance_requests'), orderBy('created_at', 'desc'));
@@ -883,6 +883,19 @@ export async function initializeLoginDatabaseIfNeeded(): Promise<void> {
         created_at: new Date().toISOString(),
       });
     }
+
+    const uniRef = doc(db, 'users', 'student-universal');
+    const uniSnap = await getDoc(uniRef);
+    if (!uniSnap.exists()) {
+      await setDoc(uniRef, {
+        username: 'student.universal',
+        password: 'Password123!',
+        role: 'STUDENT',
+        name: 'Universal Student Portal',
+        is_universal: true,
+        created_at: new Date().toISOString(),
+      });
+    }
   } catch (error) {
     console.error('Error initializing login database:', error);
   }
@@ -1074,16 +1087,63 @@ export async function authenticateUser(
   }
 
   // 3. STUDENT AUTHENTICATION
-  // Required:
-  // username - {prn}
-  // password - {firstname}.{prn last 3 no.}
+  // Supports:
+  // A. Universal Student Login: username "student.universal" / password "Password123!"
+  // B. Specific Student PRN login: username {prn}, password {firstname}.{last3}
   try {
+    const cleanLower = cleanUsername.toLowerCase();
+    if (
+      cleanLower === 'student.universal' ||
+      cleanLower === 'universal.student' ||
+      cleanLower === 'student'
+    ) {
+      if (cleanPassword === 'Password123!') {
+        return {
+          success: true,
+          user: {
+            id: 'student-universal',
+            name: 'Universal Student Portal',
+            username: 'student.universal',
+            role: 'STUDENT',
+            is_universal: true,
+            prn: 'UNIVERSAL',
+            semester: 0,
+            section: 'ALL',
+          },
+        };
+      }
+      try {
+        const uniDoc = await getDoc(doc(db, 'users', 'student-universal'));
+        if (uniDoc.exists() && uniDoc.data()?.password === cleanPassword) {
+          return {
+            success: true,
+            user: {
+              id: 'student-universal',
+              name: uniDoc.data()?.name || 'Universal Student Portal',
+              username: 'student.universal',
+              role: 'STUDENT',
+              is_universal: true,
+              prn: 'UNIVERSAL',
+              semester: 0,
+              section: 'ALL',
+            },
+          };
+        }
+      } catch (e) {
+        // Continue
+      }
+      return {
+        success: false,
+        error: 'Invalid password for Universal Student Login. Default password is "Password123!".',
+      };
+    }
+
     const studentsSnap = await getDocs(collection(db, 'students'));
     if (studentsSnap.empty) {
       return {
         success: false,
         error:
-          'No student records exist in the database yet. The Academic Admin must log in first to upload the student list before students can access the portal.',
+          'No student records exist in the database yet. You can sign in using Universal Student Login (username: "student.universal" / password: "Password123!"), or Academic Admin can upload the student list.',
       };
     }
 

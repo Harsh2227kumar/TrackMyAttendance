@@ -9,6 +9,7 @@ export interface CurrentUser {
   email?: string;
   semester?: number;
   section?: string;
+  is_universal?: boolean;
 }
 
 export interface Student {
@@ -96,6 +97,7 @@ export interface AttendanceRequest {
   items: AttendanceRequestItem[];
   created_at: string;
   updated_at?: string;
+  submitted_by?: string;
 }
 
 export interface AuditLog {

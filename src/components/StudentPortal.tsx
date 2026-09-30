@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
-import { CurrentUser, Faculty, Subject, AttendanceRequest, AttendanceRequestItem } from '../types/index.ts';
+import React, { useState, useEffect, useMemo } from 'react';
+import { CurrentUser, Faculty, Subject, AttendanceRequest, AttendanceRequestItem, Student } from '../types/index.ts';
 import {
   getFacultyList,
   getSubjectsList,
   getAttendanceRequests,
   createAttendanceRequest,
+  getStudents,
 } from '../services/dbService.ts';
 import {
   GraduationCap,
@@ -20,6 +21,10 @@ import {
   UserCheck,
   User,
   ArrowRight,
+  Search,
+  Users,
+  Check,
+  Sparkles,
 } from 'lucide-react';
 
 interface StudentPortalProps {
@@ -29,14 +34,28 @@ interface StudentPortalProps {
 }
 
 export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activeTab, onSelectTab }) => {
+  const isUniversal = Boolean(
+    currentUser.is_universal ||
+    currentUser.id === 'student-universal' ||
+    currentUser.username === 'student.universal' ||
+    currentUser.prn === 'UNIVERSAL'
+  );
+
   const [facultyList, setFacultyList] = useState<Faculty[]>([]);
   const [subjectsList, setSubjectsList] = useState<Subject[]>([]);
+  const [studentsList, setStudentsList] = useState<Student[]>([]);
   const [myRequests, setMyRequests] = useState<AttendanceRequest[]>([]);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [currentAttendancePct, setCurrentAttendancePct] = useState<string>('');
+
+  // Universal Student autocomplete state
+  const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
+  const [studentSearchTerm, setStudentSearchTerm] = useState<string>('');
+  const [isSearchOpen, setIsSearchOpen] = useState<boolean>(false);
+  const [requestsSearchTerm, setRequestsSearchTerm] = useState<string>('');
 
   // Form State for multi-item attendance update request
   const [requestItems, setRequestItems] = useState<AttendanceRequestItem[]>([
@@ -58,14 +77,16 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
   const loadData = async () => {
     setLoading(true);
     try {
-      const [fac, sub, reqs] = await Promise.all([
+      const [fac, sub, reqs, students] = await Promise.all([
         getFacultyList(),
         getSubjectsList(),
         getAttendanceRequests(currentUser.id),
+        getStudents(),
       ]);
       setFacultyList(fac.filter((f) => f.status === 'active'));
       setSubjectsList(sub.filter((s) => s.status === 'active'));
       setMyRequests(reqs);
+      setStudentsList(students.filter((s) => s.status === 'active' || !s.status));
     } catch (err) {
       console.error(err);
       setErrorMessage('Failed to load data from database.');
@@ -77,6 +98,18 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
   useEffect(() => {
     loadData();
   }, [currentUser.id]);
+
+  // Filter students for autocomplete search by name or PRN
+  const filteredStudents = useMemo(() => {
+    const term = studentSearchTerm.trim().toLowerCase();
+    if (!term) return studentsList;
+    return studentsList.filter((s) => {
+      const nameMatch = (s.name || '').toLowerCase().includes(term);
+      const prnMatch = (s.prn || '').toLowerCase().includes(term);
+      const semSecMatch = `sem ${s.semester} ${s.section}`.toLowerCase().includes(term);
+      return nameMatch || prnMatch || semSecMatch;
+    });
+  }, [studentsList, studentSearchTerm]);
 
   const handleAddItem = () => {
     setRequestItems((prev) => [
@@ -131,6 +164,25 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
     setErrorMessage('');
     setSuccessMessage('');
 
+    // Target student resolution
+    let targetStudentId = currentUser.id;
+    let targetStudentPrn = currentUser.prn || '';
+    let targetStudentName = currentUser.name;
+    let targetSemester = currentUser.semester ?? 0;
+    let targetSection = currentUser.section || '';
+
+    if (isUniversal) {
+      if (!selectedStudent) {
+        setErrorMessage('Universal Student Mode: Please search and select a Student Name or PRN before submitting.');
+        return;
+      }
+      targetStudentId = selectedStudent.id;
+      targetStudentPrn = selectedStudent.prn;
+      targetStudentName = selectedStudent.name;
+      targetSemester = selectedStudent.semester ?? 0;
+      targetSection = selectedStudent.section || '';
+    }
+
     // Validation
     for (let i = 0; i < requestItems.length; i++) {
       const it = requestItems[i];
@@ -167,18 +219,22 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
     try {
       await createAttendanceRequest(
         {
-          student_id: currentUser.id,
-          student_prn: currentUser.prn || '',
-          student_name: currentUser.name,
-          semester: currentUser.semester ?? 0,
-          section: currentUser.section || '',
+          student_id: targetStudentId,
+          student_prn: targetStudentPrn,
+          student_name: targetStudentName,
+          semester: targetSemester,
+          section: targetSection,
           current_attendance_percentage: parsedPct,
           items: requestItems,
         },
         currentUser
       );
 
-      setSuccessMessage('Attendance Update Request submitted successfully! Awaiting Admin review.');
+      const successNotice = isUniversal
+        ? `Attendance Update Request for "${targetStudentName}" (PRN: ${targetStudentPrn}) submitted successfully! Awaiting Admin review.`
+        : 'Attendance Update Request submitted successfully! Awaiting Admin review.';
+      setSuccessMessage(successNotice);
+
       // Reset form
       setCurrentAttendancePct('');
       setRequestItems([
@@ -198,7 +254,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
       await loadData();
       setTimeout(() => {
         onSelectTab('my_requests');
-      }, 1200);
+      }, 1400);
     } catch (err: any) {
       setErrorMessage(err?.message || 'Error submitting request. Please try again.');
     } finally {
@@ -219,18 +275,35 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                   Symbiosis Institute of Technology • Student ERP
                 </div>
                 <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
-                  Hello, {currentUser.name}
+                  {isUniversal ? 'Universal Student Portal' : `Hello, ${currentUser.name}`}
                 </h1>
                 <div className="flex flex-wrap items-center gap-2.5 mt-3 text-xs text-slate-600">
-                  <span className="px-2.5 py-1 bg-blue-50 text-blue-900 rounded-lg border border-blue-200 font-mono font-semibold">
-                    PRN: {currentUser.prn || '—'}
-                  </span>
-                  <span className="px-2.5 py-1 bg-slate-100 text-slate-700 rounded-lg border border-slate-200">
-                    Semester: <strong className="text-slate-900">{currentUser.semester ?? '—'}</strong>
-                  </span>
-                  <span className="px-2.5 py-1 bg-slate-100 text-slate-700 rounded-lg border border-slate-200">
-                    Section: <strong className="text-slate-900">{currentUser.section || '—'}</strong>
-                  </span>
+                  {isUniversal ? (
+                    <>
+                      <span className="px-2.5 py-1 bg-blue-100 text-blue-900 rounded-lg border border-blue-200 font-bold uppercase flex items-center gap-1.5">
+                        <Users className="w-3.5 h-3.5 text-blue-700" />
+                        <span>Universal Student Mode</span>
+                      </span>
+                      <span className="px-2.5 py-1 bg-slate-100 text-slate-700 rounded-lg border border-slate-200">
+                        Enrolled Students: <strong className="text-slate-900 font-mono">{studentsList.length}</strong>
+                      </span>
+                      <span className="px-2.5 py-1 bg-slate-100 text-slate-700 rounded-lg border border-slate-200">
+                        Scope: <strong className="text-slate-900">Submit Request for Any Student</strong>
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="px-2.5 py-1 bg-blue-50 text-blue-900 rounded-lg border border-blue-200 font-mono font-semibold">
+                        PRN: {currentUser.prn || '—'}
+                      </span>
+                      <span className="px-2.5 py-1 bg-slate-100 text-slate-700 rounded-lg border border-slate-200">
+                        Semester: <strong className="text-slate-900">{currentUser.semester ?? '—'}</strong>
+                      </span>
+                      <span className="px-2.5 py-1 bg-slate-100 text-slate-700 rounded-lg border border-slate-200">
+                        Section: <strong className="text-slate-900">{currentUser.section || '—'}</strong>
+                      </span>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -241,7 +314,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                   className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 px-5 py-2.5 bg-blue-900 hover:bg-blue-800 text-white font-semibold rounded-lg shadow-xs transition cursor-pointer"
                 >
                   <CalendarPlus className="w-4 h-4" />
-                  <span>+ Attendance Update Request</span>
+                  <span>{isUniversal ? '+ Attendance Request (Any Student)' : '+ Attendance Update Request'}</span>
                 </button>
               </div>
             </div>
@@ -250,7 +323,9 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
           {/* Quick Metrics & Summary */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-              <div className="text-xs font-semibold uppercase text-slate-500 mb-1">Total Requests Submitted</div>
+              <div className="text-xs font-semibold uppercase text-slate-500 mb-1">
+                {isUniversal ? 'Total Requests (All Students)' : 'Total Requests Submitted'}
+              </div>
               <div className="text-3xl font-bold text-slate-900">{myRequests.length}</div>
               <div className="text-xs text-slate-500 mt-1">Across all registered semesters</div>
             </div>
@@ -308,7 +383,13 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                           {req.status}
                         </span>
                       </div>
-                      <div className="text-sm font-semibold text-slate-900 mt-1">
+                      <div className="flex items-center gap-2 mt-1.5">
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded bg-blue-50 text-blue-900 border border-blue-200">
+                          {req.student_name}
+                        </span>
+                        <span className="font-mono text-xs text-slate-600">PRN: {req.student_prn}</span>
+                      </div>
+                      <div className="text-xs text-slate-600 mt-1">
                         {req.items?.length || 1} missing lecture attendance entry(s)
                       </div>
                       {req.admin_comment && (
@@ -335,36 +416,207 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
       {activeTab === 'new_request' && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="p-6 border-b border-slate-200 bg-slate-50">
-            <h1 className="text-xl font-bold text-slate-900">Attendance Update Request</h1>
-            <p className="text-xs text-slate-600 mt-1">
-              Submit attendance correction entries for missed lectures due to verified college events or official duty.
-            </p>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h1 className="text-xl font-bold text-slate-900">Attendance Update Request</h1>
+                <p className="text-xs text-slate-600 mt-1">
+                  Submit attendance correction entries for missed lectures due to verified college events or official duty.
+                </p>
+              </div>
+              {isUniversal && (
+                <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-900 border border-blue-200">
+                  <Sparkles className="w-3.5 h-3.5 mr-1 text-blue-700" /> Universal Student Mode
+                </span>
+              )}
+            </div>
           </div>
 
           <form onSubmit={handleSubmitRequest} className="p-6 space-y-6">
+            {/* Universal Student Selector with Autocomplete */}
+            {isUniversal && (
+              <div className="bg-slate-50/80 border-2 border-blue-500/70 rounded-xl p-4 sm:p-5 space-y-3.5 relative">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <div className="flex items-center space-x-2">
+                      <span className="px-2 py-0.5 rounded bg-blue-900 text-white text-[10px] font-bold uppercase tracking-wider">
+                        Universal Student Selector
+                      </span>
+                      <span className="text-xs font-semibold text-slate-700">
+                        Select Target Student
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Search by student name or PRN. Verified master data will auto-populate below.
+                    </p>
+                  </div>
+                  {selectedStudent && (
+                    <button
+                      type="button"
+                      id="change-selected-student-btn"
+                      onClick={() => {
+                        setSelectedStudent(null);
+                        setStudentSearchTerm('');
+                        setIsSearchOpen(true);
+                      }}
+                      className="text-xs font-semibold text-rose-600 hover:text-rose-700 px-3 py-1 rounded-lg border border-rose-200 hover:bg-rose-50 transition cursor-pointer self-start sm:self-auto"
+                    >
+                      ✕ Change Student
+                    </button>
+                  )}
+                </div>
+
+                {/* Autocomplete Input Container */}
+                <div className="relative">
+                  <div className="relative">
+                    <input
+                      type="text"
+                      id="student-autocomplete-search-input"
+                      placeholder="Search student by Name or PRN (autocomplete)..."
+                      value={studentSearchTerm}
+                      onChange={(e) => {
+                        setStudentSearchTerm(e.target.value);
+                        setIsSearchOpen(true);
+                        if (selectedStudent && e.target.value !== `${selectedStudent.name} (${selectedStudent.prn})`) {
+                          setSelectedStudent(null);
+                        }
+                      }}
+                      onFocus={() => setIsSearchOpen(true)}
+                      className="w-full pl-9 pr-8 py-2.5 bg-white border border-slate-300 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/30 focus:border-blue-600 transition"
+                    />
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                    {studentSearchTerm && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStudentSearchTerm('');
+                          setSelectedStudent(null);
+                          setIsSearchOpen(false);
+                        }}
+                        className="text-slate-400 hover:text-slate-600 absolute right-3 top-2.5 text-xs font-bold"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Dropdown Menu */}
+                  {isSearchOpen && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-20"
+                        onClick={() => setIsSearchOpen(false)}
+                      />
+                      <div className="absolute z-30 mt-1 w-full bg-white rounded-xl shadow-xl border border-slate-200 max-h-60 overflow-y-auto divide-y divide-slate-100">
+                        {filteredStudents.length === 0 ? (
+                          <div className="p-4 text-center text-xs text-slate-500">
+                            {studentsList.length === 0
+                              ? 'No students found in the database. Please add students in the Admin Portal first.'
+                              : `No enrolled students match "${studentSearchTerm}".`}
+                          </div>
+                        ) : (
+                          filteredStudents.map((st) => (
+                            <button
+                              key={st.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedStudent(st);
+                                setStudentSearchTerm(`${st.name} (${st.prn})`);
+                                setIsSearchOpen(false);
+                                setErrorMessage('');
+                              }}
+                              className={`w-full text-left p-3 hover:bg-blue-50/70 transition flex items-center justify-between cursor-pointer ${
+                                selectedStudent?.id === st.id ? 'bg-blue-50 border-l-4 border-blue-600' : ''
+                              }`}
+                            >
+                              <div>
+                                <div className="font-semibold text-slate-900 text-xs flex items-center gap-2">
+                                  <span>{st.name}</span>
+                                  <span className="font-mono text-[11px] px-1.5 py-0.2 rounded bg-slate-100 text-slate-700 border border-slate-200 font-bold">
+                                    PRN: {st.prn}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-slate-500 mt-0.5">
+                                  Semester {st.semester} • Section {st.section}
+                                </div>
+                              </div>
+                              <span className="text-[11px] font-semibold text-blue-700 shrink-0">
+                                Select Student →
+                              </span>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Selected Student Confirmation Pill */}
+                {selectedStudent ? (
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between text-xs">
+                    <div className="flex items-center space-x-2.5">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <div>
+                        <span className="font-bold text-emerald-950">
+                          Target Student Selected: {selectedStudent.name}
+                        </span>
+                        <span className="text-emerald-700 font-mono text-[11px] block mt-0.5">
+                          PRN: {selectedStudent.prn} • Semester {selectedStudent.semester} (Section {selectedStudent.section})
+                        </span>
+                      </div>
+                    </div>
+                    <span className="px-2 py-0.5 rounded bg-emerald-200/80 text-emerald-900 text-[10px] font-bold uppercase">
+                      Ready to Submit
+                    </span>
+                  </div>
+                ) : (
+                  <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-lg flex items-center space-x-2 text-xs text-amber-900">
+                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      Please select a student above to create an attendance correction request on their behalf.
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Auto-populated Read-Only Student Info Banner */}
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-              <div className="text-xs font-semibold text-blue-900 uppercase tracking-wide mb-2">
-                Student Master Information (Read-Only)
+              <div className="text-xs font-semibold text-blue-900 uppercase tracking-wide mb-2 flex items-center justify-between">
+                <span>Student Master Information ({isUniversal ? 'Selected Student Record' : 'Read-Only'})</span>
+                {isUniversal && selectedStudent && (
+                  <span className="text-emerald-700 font-bold lowercase flex items-center gap-1">
+                    <Check className="w-3.5 h-3.5" /> verified from SIT master database
+                  </span>
+                )}
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
                 <div>
                   <span className="text-blue-700 block">Student Name:</span>
-                  <strong className="text-slate-900 font-semibold text-sm">{currentUser.name}</strong>
+                  <strong className="text-slate-900 font-semibold text-sm">
+                    {isUniversal ? (selectedStudent ? selectedStudent.name : '—') : currentUser.name}
+                  </strong>
                 </div>
                 <div>
                   <span className="text-blue-700 block">PRN:</span>
                   <strong className="text-slate-900 font-mono font-semibold text-sm">
-                    {currentUser.prn || '—'}
+                    {isUniversal ? (selectedStudent ? selectedStudent.prn : '—') : (currentUser.prn || '—')}
                   </strong>
                 </div>
                 <div>
                   <span className="text-blue-700 block">Semester:</span>
-                  <strong className="text-slate-900 font-semibold text-sm">{currentUser.semester ?? '—'}</strong>
+                  <strong className="text-slate-900 font-semibold text-sm">
+                    {isUniversal
+                      ? (selectedStudent ? selectedStudent.semester : '—')
+                      : (currentUser.semester ?? '—')}
+                  </strong>
                 </div>
                 <div>
                   <span className="text-blue-700 block">Section:</span>
-                  <strong className="text-slate-900 font-semibold text-sm">{currentUser.section || '—'}</strong>
+                  <strong className="text-slate-900 font-semibold text-sm">
+                    {isUniversal
+                      ? (selectedStudent ? selectedStudent.section : '—')
+                      : (currentUser.section || '—')}
+                  </strong>
                 </div>
               </div>
             </div>
@@ -592,20 +844,73 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
       {/* Tab: My Requests */}
       {activeTab === 'my_requests' && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="p-6 border-b border-slate-200 flex items-center justify-between">
+          <div className="p-6 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <h1 className="text-xl font-bold text-slate-900">My Attendance Update Requests</h1>
+              <div className="flex items-center space-x-2">
+                <h1 className="text-xl font-bold text-slate-900">
+                  {isUniversal ? 'All Student Attendance Requests' : 'My Attendance Update Requests'}
+                </h1>
+                {isUniversal && (
+                  <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-900 text-[10px] font-bold uppercase tracking-wider">
+                    Universal View
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-600 mt-0.5">
-                Track approval status and feedback from college administration.
+                {isUniversal
+                  ? 'Track approval status and administration feedback across all student submissions.'
+                  : 'Track approval status and feedback from college administration.'}
               </p>
             </div>
             <button
               onClick={() => onSelectTab('new_request')}
-              className="px-3.5 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition"
+              className="self-start sm:self-auto px-4 py-2 text-xs font-semibold bg-blue-900 hover:bg-blue-800 text-white rounded-lg shadow-xs transition cursor-pointer"
             >
-              + New Request
+              {isUniversal ? '+ Request for Any Student' : '+ New Request'}
             </button>
           </div>
+
+          {/* Quick Filter Bar for Universal / Multi-student */}
+          {myRequests.length > 0 && (
+            <div className="p-4 bg-slate-50/80 border-b border-slate-200 flex flex-col sm:flex-row items-center gap-3 justify-between">
+              <div className="relative w-full sm:w-80">
+                <input
+                  type="text"
+                  placeholder="Filter by Student Name, PRN, or Subject..."
+                  value={requestsSearchTerm}
+                  onChange={(e) => setRequestsSearchTerm(e.target.value)}
+                  className="w-full pl-8 pr-7 py-2 bg-white border border-slate-300 rounded-lg text-xs placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/30"
+                />
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                {requestsSearchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => setRequestsSearchTerm('')}
+                    className="text-slate-400 hover:text-slate-600 absolute right-2.5 top-2 text-xs font-bold"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              <div className="text-xs text-slate-500 self-end sm:self-center font-medium">
+                Showing <strong className="text-slate-800">{
+                  myRequests.filter((r) => {
+                    const term = requestsSearchTerm.trim().toLowerCase();
+                    if (!term) return true;
+                    return (
+                      (r.student_name || '').toLowerCase().includes(term) ||
+                      (r.student_prn || '').toLowerCase().includes(term) ||
+                      (r.items || []).some(
+                        (it) =>
+                          it.subject_name?.toLowerCase().includes(term) ||
+                          it.event_title?.toLowerCase().includes(term)
+                      )
+                    );
+                  }).length
+                }</strong> of {myRequests.length} requests
+              </div>
+            </div>
+          )}
 
           {myRequests.length === 0 ? (
             <div className="p-12 text-center text-slate-500 text-sm">
@@ -617,101 +922,132 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
             </div>
           ) : (
             <div className="divide-y divide-slate-200">
-              {myRequests.map((req) => (
-                <div key={req.id} className="p-6 space-y-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <div className="flex items-center space-x-3">
-                      <span
-                        className={`text-xs px-3 py-1 rounded-full font-bold uppercase flex items-center space-x-1.5 ${
-                          req.status === 'approved'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : req.status === 'rejected'
-                            ? 'bg-rose-100 text-rose-800'
-                            : 'bg-amber-100 text-amber-800'
-                        }`}
-                      >
-                        {req.status === 'approved' && <CheckCircle2 className="w-3.5 h-3.5" />}
-                        {req.status === 'rejected' && <XCircle className="w-3.5 h-3.5" />}
-                        {req.status === 'pending' && <Clock className="w-3.5 h-3.5" />}
-                        <span>Status: {req.status}</span>
+              {myRequests
+                .filter((r) => {
+                  const term = requestsSearchTerm.trim().toLowerCase();
+                  if (!term) return true;
+                  return (
+                    (r.student_name || '').toLowerCase().includes(term) ||
+                    (r.student_prn || '').toLowerCase().includes(term) ||
+                    (r.items || []).some(
+                      (it) =>
+                        it.subject_name?.toLowerCase().includes(term) ||
+                        it.event_title?.toLowerCase().includes(term)
+                    )
+                  );
+                })
+                .map((req) => (
+                  <div key={req.id} className="p-6 space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`text-xs px-3 py-1 rounded-full font-bold uppercase flex items-center space-x-1.5 ${
+                            req.status === 'approved'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : req.status === 'rejected'
+                              ? 'bg-rose-100 text-rose-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {req.status === 'approved' && <CheckCircle2 className="w-3.5 h-3.5" />}
+                          {req.status === 'rejected' && <XCircle className="w-3.5 h-3.5" />}
+                          {req.status === 'pending' && <Clock className="w-3.5 h-3.5" />}
+                          <span>Status: {req.status}</span>
+                        </span>
+                        <span className="text-xs text-slate-500">
+                          Submitted on {new Date(req.created_at).toLocaleDateString()}
+                        </span>
+                        <span className="text-xs px-2.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                          Current Att.:{' '}
+                          {req.current_attendance_percentage !== null && req.current_attendance_percentage !== undefined ? (
+                            <strong className="text-slate-900 font-mono font-bold">
+                              {req.current_attendance_percentage}%
+                            </strong>
+                          ) : (
+                            <span className="italic text-slate-400">Not Entered</span>
+                          )}
+                        </span>
+                      </div>
+
+                      <div className="text-xs text-slate-500 font-mono">Request ID: {req.id.slice(0, 8)}</div>
+                    </div>
+
+                    {/* Target Student Identity Pill */}
+                    <div className="flex flex-wrap items-center gap-2 p-2.5 bg-blue-50/70 border border-blue-200/80 rounded-lg text-xs">
+                      <span className="font-bold text-blue-950 flex items-center gap-1.5">
+                        <GraduationCap className="w-4 h-4 text-blue-700" />
+                        <span>Student: {req.student_name}</span>
                       </span>
-                      <span className="text-xs text-slate-500">
-                        Submitted on {new Date(req.created_at).toLocaleDateString()}
+                      <span className="font-mono bg-white px-2 py-0.5 rounded border border-blue-200 text-slate-800 font-semibold">
+                        PRN: {req.student_prn || '—'}
                       </span>
-                      <span className="text-xs px-2.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
-                        Current Att.:{' '}
-                        {req.current_attendance_percentage !== null && req.current_attendance_percentage !== undefined ? (
-                          <strong className="text-slate-900 font-mono font-bold">
-                            {req.current_attendance_percentage}%
-                          </strong>
-                        ) : (
-                          <span className="italic text-slate-400">Not Entered</span>
-                        )}
+                      <span className="bg-white px-2 py-0.5 rounded border border-blue-200 text-slate-700">
+                        Semester {req.semester ?? '—'}
+                      </span>
+                      <span className="bg-white px-2 py-0.5 rounded border border-blue-200 text-slate-700">
+                        Section {req.section || '—'}
                       </span>
                     </div>
 
-                    <div className="text-xs text-slate-500 font-mono">Request ID: {req.id.slice(0, 8)}</div>
-                  </div>
+                    {/* Admin feedback banner */}
+                    {req.admin_comment && (
+                      <div className="p-3 bg-slate-50 border-l-4 border-blue-600 rounded text-xs text-slate-700">
+                        <span className="font-semibold text-slate-900 block mb-0.5">Admin Comment:</span>
+                        {req.admin_comment}
+                      </div>
+                    )}
 
-                  {/* Admin feedback banner */}
-                  {req.admin_comment && (
-                    <div className="p-3 bg-slate-50 border-l-4 border-blue-600 rounded text-xs text-slate-700">
-                      <span className="font-semibold text-slate-900 block mb-0.5">Admin Comment:</span>
-                      {req.admin_comment}
-                    </div>
-                  )}
-
-                  {/* Items list */}
-                  <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                    <table className="min-w-full text-xs divide-y divide-slate-200">
-                      <thead className="bg-slate-50 text-slate-600 font-semibold">
-                        <tr>
-                          <th className="py-2.5 px-3 text-left">Date</th>
-                          <th className="py-2.5 px-3 text-left">Time</th>
-                          <th className="py-2.5 px-3 text-left">Subject</th>
-                          <th className="py-2.5 px-3 text-left">Faculty</th>
-                          <th className="py-2.5 px-3 text-left">Event / Reason</th>
-                          <th className="py-2.5 px-3 text-center">Item Review</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 bg-white">
-                        {req.items?.map((item, idx) => (
-                          <tr key={idx} className="hover:bg-slate-50">
-                            <td className="py-2 px-3 font-medium text-slate-900 whitespace-nowrap">{item.date}</td>
-                            <td className="py-2 px-3 text-slate-600 whitespace-nowrap">
-                              {item.start_time} - {item.end_time}
-                            </td>
-                            <td className="py-2 px-3 font-semibold text-slate-800">{item.subject_name}</td>
-                            <td className="py-2 px-3 text-slate-600">{item.faculty_name}</td>
-                            <td className="py-2 px-3 text-slate-700">
-                              <div>{item.event_title}</div>
-                              {item.reason && <div className="text-[11px] text-slate-500 italic">"{item.reason}"</div>}
-                              {item.admin_note && (
-                                <div className="text-[11px] text-blue-700 font-medium mt-0.5">
-                                  Note: {item.admin_note}
-                                </div>
-                              )}
-                            </td>
-                            <td className="py-2 px-3 text-center">
-                              <span
-                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                                  (item.status || req.status) === 'approved'
-                                    ? 'bg-emerald-100 text-emerald-800'
-                                    : (item.status || req.status) === 'rejected'
-                                    ? 'bg-rose-100 text-rose-800'
-                                    : 'bg-amber-100 text-amber-800'
-                                }`}
-                              >
-                                {item.status || req.status || 'pending'}
-                              </span>
-                            </td>
+                    {/* Items list */}
+                    <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                      <table className="min-w-full text-xs divide-y divide-slate-200">
+                        <thead className="bg-slate-50 text-slate-600 font-semibold">
+                          <tr>
+                            <th className="py-2.5 px-3 text-left">Date</th>
+                            <th className="py-2.5 px-3 text-left">Time</th>
+                            <th className="py-2.5 px-3 text-left">Subject</th>
+                            <th className="py-2.5 px-3 text-left">Faculty</th>
+                            <th className="py-2.5 px-3 text-left">Event / Reason</th>
+                            <th className="py-2.5 px-3 text-center">Item Review</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 bg-white">
+                          {req.items?.map((item, idx) => (
+                            <tr key={idx} className="hover:bg-slate-50">
+                              <td className="py-2 px-3 font-medium text-slate-900 whitespace-nowrap">{item.date}</td>
+                              <td className="py-2 px-3 text-slate-600 whitespace-nowrap">
+                                {item.start_time} - {item.end_time}
+                              </td>
+                              <td className="py-2 px-3 font-semibold text-slate-800">{item.subject_name}</td>
+                              <td className="py-2 px-3 text-slate-600">{item.faculty_name}</td>
+                              <td className="py-2 px-3 text-slate-700">
+                                <div>{item.event_title}</div>
+                                {item.reason && <div className="text-[11px] text-slate-500 italic">"{item.reason}"</div>}
+                                {item.admin_note && (
+                                  <div className="text-[11px] text-blue-700 font-medium mt-0.5">
+                                    Note: {item.admin_note}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="py-2 px-3 text-center">
+                                <span
+                                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                    (item.status || req.status) === 'approved'
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : (item.status || req.status) === 'rejected'
+                                      ? 'bg-rose-100 text-rose-800'
+                                      : 'bg-amber-100 text-amber-800'
+                                  }`}
+                                >
+                                  {item.status || req.status || 'pending'}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
             </div>
           )}
         </div>
@@ -721,42 +1057,74 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
       {activeTab === 'profile' && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 max-w-2xl mx-auto space-y-6">
           <div className="flex items-center space-x-4 border-b border-slate-200 pb-4">
-            <div className="w-14 h-14 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center font-bold text-xl">
-              {currentUser.name.slice(0, 2).toUpperCase()}
+            <div className="w-14 h-14 rounded-full bg-blue-900 text-white flex items-center justify-center font-bold text-xl shadow-xs">
+              <GraduationCap className="w-7 h-7" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-slate-900">{currentUser.name}</h1>
-              <p className="text-xs text-slate-500">Symbiosis Institute of Technology • Student Master Account</p>
+              <h1 className="text-xl font-bold text-slate-900">
+                {isUniversal ? 'Universal Student Portal' : currentUser.name}
+              </h1>
+              <p className="text-xs text-slate-500">
+                {isUniversal
+                  ? 'Multi-Student Attendance Request & Master Record Delegate'
+                  : 'Symbiosis Institute of Technology • Student Master Account'}
+              </p>
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-4 text-xs">
-            <div className="p-3 bg-slate-50 rounded-lg">
-              <span className="text-slate-500 block">Permanent Registration Number (PRN)</span>
-              <strong className="text-slate-900 font-mono text-sm">{currentUser.prn || '—'}</strong>
-            </div>
-            <div className="p-3 bg-slate-50 rounded-lg">
-              <span className="text-slate-500 block">Username</span>
-              <strong className="text-slate-900 font-mono text-sm">{currentUser.username}</strong>
-            </div>
-            <div className="p-3 bg-slate-50 rounded-lg">
-              <span className="text-slate-500 block">Enrolled Semester</span>
-              <strong className="text-slate-900 text-sm">
-                {currentUser.semester ? `Semester ${currentUser.semester}` : '—'}
-              </strong>
-            </div>
-            <div className="p-3 bg-slate-50 rounded-lg">
-              <span className="text-slate-500 block">Class Section</span>
-              <strong className="text-slate-900 text-sm">
-                {currentUser.section ? `Section ${currentUser.section}` : '—'}
-              </strong>
-            </div>
+            {isUniversal ? (
+              <>
+                <div className="p-3 bg-slate-50 rounded-lg">
+                  <span className="text-slate-500 block">Access Mode</span>
+                  <strong className="text-blue-900 font-semibold text-sm">Universal Student Portal</strong>
+                </div>
+                <div className="p-3 bg-slate-50 rounded-lg">
+                  <span className="text-slate-500 block">Username</span>
+                  <strong className="text-slate-900 font-mono text-sm">{currentUser.username}</strong>
+                </div>
+                <div className="p-3 bg-slate-50 rounded-lg">
+                  <span className="text-slate-500 block">Enrolled Students in Database</span>
+                  <strong className="text-slate-900 text-sm font-mono">{studentsList.length} Students</strong>
+                </div>
+                <div className="p-3 bg-slate-50 rounded-lg">
+                  <span className="text-slate-500 block">Request Creation Scope</span>
+                  <strong className="text-emerald-700 text-sm">Any Student (Name / PRN Autocomplete)</strong>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="p-3 bg-slate-50 rounded-lg">
+                  <span className="text-slate-500 block">Permanent Registration Number (PRN)</span>
+                  <strong className="text-slate-900 font-mono text-sm">{currentUser.prn || '—'}</strong>
+                </div>
+                <div className="p-3 bg-slate-50 rounded-lg">
+                  <span className="text-slate-500 block">Username</span>
+                  <strong className="text-slate-900 font-mono text-sm">{currentUser.username}</strong>
+                </div>
+                <div className="p-3 bg-slate-50 rounded-lg">
+                  <span className="text-slate-500 block">Enrolled Semester</span>
+                  <strong className="text-slate-900 text-sm">
+                    {currentUser.semester ? `Semester ${currentUser.semester}` : '—'}
+                  </strong>
+                </div>
+                <div className="p-3 bg-slate-50 rounded-lg">
+                  <span className="text-slate-500 block">Class Section</span>
+                  <strong className="text-slate-900 text-sm">
+                    {currentUser.section ? `Section ${currentUser.section}` : '—'}
+                  </strong>
+                </div>
+              </>
+            )}
           </div>
 
-          <div className="p-4 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs">
-            <span className="font-semibold block mb-1">ERP Security Notice:</span>
-            Student master data (Name, PRN, Semester, and Section) is maintained by the SIT Academic Cell. Students
-            cannot edit these master fields directly.
+          <div className="p-4 rounded-lg bg-blue-50 border border-blue-200 text-blue-950 text-xs">
+            <span className="font-semibold block mb-1">
+              {isUniversal ? 'Universal Student Delegation Notice:' : 'ERP Security Notice:'}
+            </span>
+            {isUniversal
+              ? 'You are signed into the Universal Student Portal. You can submit attendance correction requests on behalf of any enrolled student at SIT Nagpur. Each submission automatically links the student\'s verified PRN and academic details for Admin review.'
+              : 'Student master data (Name, PRN, Semester, and Section) is maintained by the SIT Academic Cell. Students cannot edit these master fields directly.'}
           </div>
         </div>
       )}

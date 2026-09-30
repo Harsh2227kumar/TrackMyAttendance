@@ -41,9 +41,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   const navItems: Record<UserRole, NavItem[]> = {
     STUDENT: [
       { id: 'dashboard', label: 'Dashboard' },
-      { id: 'new_request', label: '+ Update Request' },
-      { id: 'my_requests', label: 'My Requests' },
-      { id: 'profile', label: 'My Profile' },
+      { id: 'new_request', label: currentUser.is_universal ? '+ Universal Request' : '+ Update Request' },
+      { id: 'my_requests', label: currentUser.is_universal ? 'All Student Requests' : 'My Requests' },
+      { id: 'profile', label: currentUser.is_universal ? 'Portal Info' : 'My Profile' },
     ],
     ORGANISER: [
       { id: 'dashboard', label: 'Dashboard' },
@@ -181,7 +181,11 @@ export const Navbar: React.FC<NavbarProps> = ({
             <div className="hidden lg:block text-right">
               <div className="text-xs font-semibold text-slate-900">{currentUser.name}</div>
               <div className="text-[11px] text-slate-500">
-                {currentUser.prn ? `PRN: ${currentUser.prn}` : currentUser.username}
+                {currentUser.is_universal
+                  ? 'Universal Student Delegate'
+                  : currentUser.prn
+                  ? `PRN: ${currentUser.prn}`
+                  : currentUser.username}
               </div>
             </div>
 

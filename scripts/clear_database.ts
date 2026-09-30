@@ -50,10 +50,20 @@ async function clearDatabase() {
     created_at: new Date().toISOString(),
   };
 
+  const universalStudentUser = {
+    username: 'student.universal',
+    password: 'Password123!',
+    role: 'STUDENT',
+    name: 'Universal Student Portal',
+    is_universal: true,
+    created_at: new Date().toISOString(),
+  };
+
   await setDoc(doc(db, 'users', 'admin-academic'), adminUser);
   await setDoc(doc(db, 'users', 'org-vp'), organiserUser);
+  await setDoc(doc(db, 'users', 'student-universal'), universalStudentUser);
 
-  console.log('Created admin.academic and org.vp login records.');
+  console.log('Created admin.academic, org.vp, and student.universal login records.');
   console.log('Students will be dynamically authorized from PRN and {firstname}.{last 3 no.} upon upload.');
   console.log('--- Database Purge & Fresh Initialization Complete ---');
 }

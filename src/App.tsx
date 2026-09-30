@@ -71,22 +71,16 @@ export default function App() {
     if (newRole === currentUser.role) return;
 
     if (newRole === 'STUDENT') {
-      const students = await getStudents();
-      if (students.length > 0) {
-        const first = students[0];
-        setCurrentUser({
-          id: first.id,
-          name: first.name,
-          username: first.prn,
-          role: 'STUDENT',
-          prn: first.prn,
-          semester: first.semester,
-          section: first.section,
-        });
-      } else {
-        alert('No student records uploaded yet. Please log in as Admin to upload the student list.');
-        return;
-      }
+      setCurrentUser({
+        id: 'student-universal',
+        name: 'Universal Student Portal',
+        username: 'student.universal',
+        role: 'STUDENT',
+        is_universal: true,
+        prn: 'UNIVERSAL',
+        semester: 0,
+        section: 'ALL',
+      });
     } else if (newRole === 'ORGANISER') {
       setCurrentUser({
         id: 'org-vp',
