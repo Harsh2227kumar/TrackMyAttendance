@@ -35,6 +35,7 @@ import {
   getAuditLogs,
   seedInitialDatabaseIfNeeded,
   bulkCreateFaculty,
+  bulkCreateStudents,
   clearAllDatabaseData,
 } from '../services/dbService.ts';
 import {
@@ -42,12 +43,18 @@ import {
   generateEventAttendancePDF,
   parseAndValidateStudentExcel,
   parseAndValidateFacultyExcel,
+  parseAndValidateMultipleStudentFiles,
+  parseAndValidateStudentRawText,
   downloadFacultyExcelTemplate,
   downloadStudentExcelTemplate,
   ExcelImportValidationResult,
   FacultyImportValidationResult,
+  MultiStudentImportValidationResult,
+  StudentImportRecord,
+  MultiFileSummary,
   ExportFormatType,
 } from '../utils/exportImport.ts';
+import { formatDateDMY } from '../utils/dateUtils.ts';
 import {
   Users,
   GraduationCap,
@@ -76,6 +83,12 @@ import {
   X,
   SlidersHorizontal,
   Sparkles,
+  ClipboardPaste,
+  FileText,
+  CheckSquare,
+  Layers,
+  FolderPlus,
+  Info,
 } from 'lucide-react';
 
 interface AdminPortalProps {
@@ -100,11 +113,20 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
   const [studentSemFilter, setStudentSemFilter] = useState<'ALL' | number>('ALL');
   const [studentSecFilter, setStudentSecFilter] = useState<'ALL' | string>('ALL');
 
-  // Excel Import state
+  // Bulk Student Users Import state (supports multiple files + direct paste)
   const [importModalOpen, setImportModalOpen] = useState(false);
-  const [importResult, setImportResult] = useState<ExcelImportValidationResult | null>(null);
-  const [importingFile, setImportingFile] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [bulkImportMode, setBulkImportMode] = useState<'files' | 'paste'>('files');
+  const [selectedStudentFiles, setSelectedStudentFiles] = useState<File[]>([]);
+  const [pastedStudentText, setPastedStudentText] = useState('');
+  const [pasteDefaultSem, setPasteDefaultSem] = useState<number>(5);
+  const [pasteDefaultSec, setPasteDefaultSec] = useState<string>('A');
+  const [updateExistingStudents, setUpdateExistingStudents] = useState<boolean>(false);
+  const [multiImportResult, setMultiImportResult] = useState<MultiStudentImportValidationResult | null>(null);
+  const [previewFilterTab, setPreviewFilterTab] = useState<'valid' | 'existing' | 'duplicate' | 'invalid'>('valid');
+  const [previewSearchTerm, setPreviewSearchTerm] = useState('');
+  const [importingBatch, setImportingBatch] = useState(false);
+  const multiFileInputRef = useRef<HTMLInputElement>(null);
+  const addMoreFileInputRef = useRef<HTMLInputElement>(null);
 
   // Add / Edit Student modal
   const [studentModalOpen, setStudentModalOpen] = useState(false);
@@ -298,39 +320,108 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setImportingFile(true);
+  // ----------------------------------------------------
+  // MULTIPLE BULK STUDENT DATA IMPORT HANDLERS
+  // ----------------------------------------------------
+  const runMultiFileValidation = async (files: File[]) => {
+    if (files.length === 0) {
+      setMultiImportResult(null);
+      return;
+    }
+    setImportingBatch(true);
     try {
       const existingPRNs = new Set(students.map((s) => s.prn));
-      const res = await parseAndValidateStudentExcel(file, existingPRNs);
-      setImportResult(res);
-    } catch (err) {
-      alert('Failed to parse Excel file. Please ensure columns: PRN, Name, Semester, Section are present.');
+      const res = await parseAndValidateMultipleStudentFiles(files, existingPRNs);
+      setMultiImportResult(res);
+      if (res.validRecords.length > 0) setPreviewFilterTab('valid');
+      else if (res.existingInDbRecords.length > 0) setPreviewFilterTab('existing');
+      else if (res.invalidRecords.length > 0) setPreviewFilterTab('invalid');
+    } catch (err: any) {
+      alert(`Error parsing student spreadsheets: ${err?.message || err}`);
     } finally {
-      setImportingFile(false);
+      setImportingBatch(false);
     }
   };
 
-  const handleConfirmExcelImport = async () => {
-    if (!importResult || importResult.validRecords.length === 0) return;
-    setLoading(true);
-    try {
-      let imported = 0;
-      for (const rec of importResult.validRecords) {
-        await createStudent(rec, currentUser);
-        imported++;
+  const handleSelectMultipleStudentFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newFiles = Array.from(e.target.files || []);
+    if (newFiles.length === 0) return;
+
+    // Filter duplicates by name & size
+    const combinedFiles = [...selectedStudentFiles];
+    newFiles.forEach((nf) => {
+      if (!combinedFiles.some((f) => f.name === nf.name && f.size === nf.size)) {
+        combinedFiles.push(nf);
       }
-      setStatusMsg({ text: `Successfully imported ${imported} students from Excel.`, type: 'success' });
+    });
+
+    setSelectedStudentFiles(combinedFiles);
+    await runMultiFileValidation(combinedFiles);
+    if (e.target) e.target.value = '';
+  };
+
+  const handleRemoveStudentFile = async (index: number) => {
+    const updated = selectedStudentFiles.filter((_, i) => i !== index);
+    setSelectedStudentFiles(updated);
+    if (updated.length > 0) {
+      await runMultiFileValidation(updated);
+    } else {
+      setMultiImportResult(null);
+    }
+  };
+
+  const handleParsePastedStudentText = () => {
+    if (!pastedStudentText.trim()) {
+      alert('Please enter or paste student tabular data first.');
+      return;
+    }
+    const existingPRNs = new Set(students.map((s) => s.prn));
+    const res = parseAndValidateStudentRawText(
+      pastedStudentText,
+      existingPRNs,
+      pasteDefaultSem,
+      pasteDefaultSec
+    );
+    setMultiImportResult(res);
+    if (res.validRecords.length > 0) setPreviewFilterTab('valid');
+    else if (res.existingInDbRecords.length > 0) setPreviewFilterTab('existing');
+    else if (res.invalidRecords.length > 0) setPreviewFilterTab('invalid');
+  };
+
+  const handleConfirmBulkStudentImport = async () => {
+    if (!multiImportResult) return;
+
+    const validRecs = [...multiImportResult.validRecords];
+    const existingRecs = updateExistingStudents
+      ? multiImportResult.existingInDbRecords.map((e) => e.record)
+      : [];
+
+    const totalToProcess = validRecs.length + existingRecs.length;
+    if (totalToProcess === 0) {
+      alert('No student records ready for import or update. Please check your data.');
+      return;
+    }
+
+    setImportingBatch(true);
+    try {
+      const allRecords = [...validRecs, ...existingRecs];
+      const res = await bulkCreateStudents(allRecords, currentUser, {
+        updateExisting: updateExistingStudents,
+      });
+
+      setStatusMsg({
+        text: `Bulk student import successful: ${res.created} new students created, ${res.updated} existing records updated.`,
+        type: 'success',
+      });
       setImportModalOpen(false);
-      setImportResult(null);
+      setSelectedStudentFiles([]);
+      setPastedStudentText('');
+      setMultiImportResult(null);
       await loadAllData();
     } catch (err: any) {
-      alert(err.message || 'Error importing records');
+      alert(`Bulk student import failed: ${err?.message || err}`);
     } finally {
-      setLoading(false);
+      setImportingBatch(false);
     }
   };
 
@@ -732,7 +823,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                     <div>
                       <div className="font-semibold text-slate-900">{evt.title}</div>
                       <div className="text-slate-500 mt-0.5">
-                        {evt.date} • {evt.venue} • {evt.student_count || 0} attendees
+                        {formatDateDMY(evt.date)} • {evt.venue} • {evt.student_count || 0} attendees
                       </div>
                     </div>
                     <span
@@ -789,15 +880,20 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
       )}
 
       {/* -------------------------------------------------- */}
-      {/* TAB 2: STUDENT MANAGEMENT & EXCEL IMPORT */}
+      {/* TAB 2: STUDENT MANAGEMENT & MULTI-BULK EXCEL/CSV IMPORT */}
       {/* -------------------------------------------------- */}
-      {activeTab === 'students' && (
+      {(activeTab === 'students' || activeTab === 'users' || activeTab === 'admin_users') && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-4">
             <div>
-              <h1 className="text-lg font-bold text-slate-900">Student Master Database</h1>
+              <div className="flex items-center space-x-2.5">
+                <h1 className="text-lg font-bold text-slate-900">Admin Users & Student Master Database</h1>
+                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase bg-blue-100 text-blue-900 font-mono">
+                  {students.length} Enrolled
+                </span>
+              </div>
               <p className="text-xs text-slate-500 mt-0.5">
-                Manage registered students, validate PRNs, and bulk import student records via Excel.
+                Manage registered student credentials, validate PRNs, and bulk import multiple student datasets via multi-file Excel upload or direct copy-paste.
               </p>
             </div>
 
@@ -814,15 +910,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
               </button>
 
               <button
-                id="open-excel-import-modal-btn"
+                id="open-bulk-student-import-modal-btn"
                 onClick={() => {
-                  setImportResult(null);
                   setImportModalOpen(true);
+                  if (selectedStudentFiles.length > 0) {
+                    runMultiFileValidation(selectedStudentFiles);
+                  }
                 }}
                 className="inline-flex items-center space-x-1.5 px-3.5 py-2 bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold rounded-lg shadow-xs transition cursor-pointer"
               >
                 <Upload className="w-3.5 h-3.5" />
-                <span>Import Students (Excel)</span>
+                <span>Import Multiple Bulk Student Data</span>
               </button>
 
               <button
@@ -1188,7 +1286,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                   <tr key={evt.id} className="hover:bg-slate-50">
                     <td className="py-2.5 px-3 font-semibold text-slate-900">{evt.title}</td>
                     <td className="py-2.5 px-3 text-slate-600">
-                      {evt.date} ({evt.start_time} - {evt.end_time})
+                      {formatDateDMY(evt.date)} ({evt.start_time} - {evt.end_time})
                     </td>
                     <td className="py-2.5 px-3 text-slate-600">{evt.venue}</td>
                     <td className="py-2.5 px-3 text-slate-700">{evt.organiser_name}</td>
@@ -1406,7 +1504,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                     filteredQueue.map((req) => (
                       <tr key={req.id} className="hover:bg-slate-50">
                         <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap">
-                          {new Date(req.created_at).toLocaleDateString()}
+                          {formatDateDMY(req.created_at)}
                         </td>
                         <td className="py-2.5 px-3">
                           <div className="font-semibold text-slate-900">{req.student_name}</div>
@@ -1432,7 +1530,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                                     ? 'bg-rose-50 text-rose-800 border-rose-200'
                                     : 'bg-slate-100 text-slate-700 border-slate-200'
                                 }`}
-                                title={`${it.subject_name} • ${it.faculty_name} (${it.date} ${it.start_time}-${it.end_time})`}
+                                title={`${it.subject_name} • ${it.faculty_name} (${formatDateDMY(it.date)} ${it.start_time}-${it.end_time})`}
                               >
                                 <span>{it.subject_name || 'Lecture'}</span>
                                 {it.status === 'approved' && <Check className="w-3 h-3 ml-1 text-emerald-600" />}
@@ -1946,7 +2044,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                           {r.venue && <div className="text-[10px] text-slate-400">{r.venue}</div>}
                         </td>
                         <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap">
-                          {r.date} ({r.time})
+                          {formatDateDMY(r.date)} ({r.time})
                         </td>
                         <td className="py-2.5 px-3 text-slate-700">
                           <div className="font-medium text-slate-900">{r.subject_name || '—'}</div>
@@ -2056,7 +2154,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                 {auditLogs.map((log) => (
                   <tr key={log.id} className="hover:bg-slate-50">
                     <td className="py-2 px-3 text-slate-500 whitespace-nowrap">
-                      {new Date(log.timestamp).toLocaleString()}
+                      {formatDateDMY(log.timestamp)} {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </td>
                     <td className="py-2 px-3 font-semibold text-slate-800">{log.user_name}</td>
                     <td className="py-2 px-3">
@@ -2219,115 +2317,587 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
       )}
 
       {/* -------------------------------------------------- */}
-      {/* MODAL: EXCEL STUDENT IMPORT PREVIEW */}
+      {/* MODAL: MULTIPLE BULK STUDENT DATA IMPORT */}
       {/* -------------------------------------------------- */}
       {importModalOpen && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl border border-slate-200 shadow-2xl max-w-2xl w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-2xl max-w-4xl w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+            {/* Modal Header */}
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <h3 className="text-base font-bold text-slate-900">Student Excel Import</h3>
+              <div className="flex items-center space-x-2.5">
+                <div className="w-9 h-9 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-800">
+                  <FileSpreadsheet className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">Import Multiple Bulk Student Data</h3>
+                  <p className="text-xs text-slate-500">
+                    Upload multiple student spreadsheets (.xlsx, .xls, .csv) simultaneously or paste raw tabular student data directly.
+                  </p>
+                </div>
+              </div>
               <button
-                onClick={() => setImportModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 font-bold"
+                type="button"
+                onClick={() => {
+                  setImportModalOpen(false);
+                  setSelectedStudentFiles([]);
+                  setPastedStudentText('');
+                  setMultiImportResult(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 font-bold text-lg p-1 cursor-pointer"
               >
                 ×
               </button>
             </div>
 
-            <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-900 space-y-1">
-              <span className="font-semibold block">Required Columns in Spreadsheet:</span>
-              <p className="font-mono">PRN, Name, Semester (1-8), Section (A/B/C)</p>
-              <p className="text-[11px] text-blue-700">
-                All records will be checked for duplicate PRNs against the existing database before import.
-              </p>
+            {/* Mode Selector Tabs */}
+            <div className="flex items-center space-x-2 border-b border-slate-200 pb-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setBulkImportMode('files');
+                  if (selectedStudentFiles.length > 0) {
+                    runMultiFileValidation(selectedStudentFiles);
+                  }
+                }}
+                className={`flex items-center space-x-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition cursor-pointer ${
+                  bulkImportMode === 'files'
+                    ? 'bg-blue-900 text-white shadow-xs'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Multi-File Spreadsheets</span>
+                {selectedStudentFiles.length > 0 && (
+                  <span className="ml-1.5 px-1.5 py-0.2 rounded-full text-[10px] bg-white/20 text-white font-mono">
+                    {selectedStudentFiles.length}
+                  </span>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setBulkImportMode('paste');
+                  if (pastedStudentText.trim()) {
+                    handleParsePastedStudentText();
+                  }
+                }}
+                className={`flex items-center space-x-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition cursor-pointer ${
+                  bulkImportMode === 'paste'
+                    ? 'bg-blue-900 text-white shadow-xs'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                <ClipboardPaste className="w-3.5 h-3.5" />
+                <span>Direct Copy-Paste / Raw Text</span>
+              </button>
             </div>
 
-            {/* File input */}
-            <div className="border-2 border-dashed border-slate-300 rounded-xl p-6 text-center hover:border-blue-500 transition">
-              <Upload className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-              <label className="cursor-pointer">
-                <span className="text-xs font-semibold text-blue-600 hover:text-blue-800">
-                  Click to select Excel file (.xlsx / .csv)
-                </span>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".xlsx, .xls, .csv"
-                  onChange={handleFileUpload}
-                  className="hidden"
-                />
-              </label>
-              <p className="text-[11px] text-slate-400 mt-1">Upload student batch list for semester enrollment.</p>
-            </div>
-
-            {/* Validation Breakdown */}
-            {importResult && (
+            {/* Mode 1: Multi-File Spreadsheets */}
+            {bulkImportMode === 'files' && (
               <div className="space-y-4">
-                <div className="grid grid-cols-3 gap-3 text-center text-xs">
-                  <div className="p-3 bg-emerald-50 text-emerald-800 rounded-lg border border-emerald-200">
-                    <strong className="text-lg block font-bold">{importResult.validRecords.length}</strong>
-                    <span>Valid Records</span>
-                  </div>
-                  <div className="p-3 bg-amber-50 text-amber-800 rounded-lg border border-amber-200">
-                    <strong className="text-lg block font-bold">{importResult.duplicatePRNs.length}</strong>
-                    <span>Duplicate PRNs</span>
-                  </div>
-                  <div className="p-3 bg-rose-50 text-rose-800 rounded-lg border border-rose-200">
-                    <strong className="text-lg block font-bold">{importResult.invalidRecords.length}</strong>
-                    <span>Invalid Records</span>
+                <div className="border-2 border-dashed border-slate-300 rounded-xl p-6 text-center hover:border-blue-500 transition bg-slate-50/50">
+                  <Upload className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                  <label className="cursor-pointer">
+                    <span className="text-xs font-bold text-blue-700 hover:text-blue-900">
+                      Choose Multiple Files (.xlsx, .xls, .csv)
+                    </span>
+                    <input
+                      ref={multiFileInputRef}
+                      type="file"
+                      multiple
+                      accept=".xlsx, .xls, .csv"
+                      onChange={handleSelectMultipleStudentFiles}
+                      className="hidden"
+                    />
+                  </label>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Select multiple section/branch files at once (e.g., CS-Sem5-A.xlsx, CS-Sem5-B.xlsx, IT-Sem3.csv).
+                  </p>
+                  <div className="mt-2 text-[10px] text-slate-400 font-mono">
+                    Expected columns: PRN, Name, Semester (1-8), Section (A/B/C)
                   </div>
                 </div>
 
-                {/* Preview Table of Valid Records */}
-                {importResult.validRecords.length > 0 && (
-                  <div>
-                    <h4 className="text-xs font-bold text-slate-800 mb-2">
-                      Preview Valid Records ({importResult.validRecords.length})
-                    </h4>
-                    <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-lg text-xs">
-                      <table className="min-w-full divide-y divide-slate-200">
-                        <thead className="bg-slate-50 text-slate-600 font-semibold">
-                          <tr>
-                            <th className="py-2 px-3 text-left">PRN</th>
-                            <th className="py-2 px-3 text-left">Name</th>
-                            <th className="py-2 px-3 text-center">Sem</th>
-                            <th className="py-2 px-3 text-center">Sec</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 bg-white">
-                          {importResult.validRecords.slice(0, 15).map((r, i) => (
-                            <tr key={i}>
-                              <td className="py-1.5 px-3 font-mono font-bold text-slate-800">{r.prn}</td>
-                              <td className="py-1.5 px-3 text-slate-900">{r.name}</td>
-                              <td className="py-1.5 px-3 text-center">{r.semester}</td>
-                              <td className="py-1.5 px-3 text-center font-semibold">{r.section}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                {/* Uploaded Files Chips / Cards */}
+                {selectedStudentFiles.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-800">
+                        Selected Files ({selectedStudentFiles.length})
+                      </span>
+                      <div className="flex items-center space-x-2">
+                        <label className="cursor-pointer inline-flex items-center space-x-1 text-xs text-blue-700 hover:text-blue-900 font-semibold">
+                          <FolderPlus className="w-3.5 h-3.5" />
+                          <span>+ Add More Files</span>
+                          <input
+                            ref={addMoreFileInputRef}
+                            type="file"
+                            multiple
+                            accept=".xlsx, .xls, .csv"
+                            onChange={handleSelectMultipleStudentFiles}
+                            className="hidden"
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedStudentFiles([]);
+                            setMultiImportResult(null);
+                          }}
+                          className="text-xs text-rose-600 hover:text-rose-800 font-semibold cursor-pointer"
+                        >
+                          Clear All
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                      {selectedStudentFiles.map((file, idx) => {
+                        const fileSum = multiImportResult?.filesSummary.find((s) => s.name === file.name);
+                        return (
+                          <div
+                            key={idx}
+                            className="p-3 bg-white rounded-lg border border-slate-200 flex items-center justify-between text-xs shadow-2xs"
+                          >
+                            <div className="flex items-center space-x-2 overflow-hidden">
+                              <FileSpreadsheet className="w-4 h-4 text-emerald-700 shrink-0" />
+                              <div className="truncate">
+                                <div className="font-semibold text-slate-900 truncate" title={file.name}>
+                                  {file.name}
+                                </div>
+                                <div className="text-[10px] text-slate-500">
+                                  {(file.size / 1024).toFixed(1)} KB
+                                  {fileSum && ` • ${fileSum.totalRows} rows (${fileSum.validCount} valid)`}
+                                </div>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveStudentFile(idx)}
+                              className="text-slate-400 hover:text-rose-600 p-1 shrink-0 cursor-pointer"
+                              title="Remove file"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
               </div>
             )}
 
-            <div className="flex items-center justify-end space-x-3 pt-3 border-t border-slate-200">
+            {/* Mode 2: Direct Copy-Paste / Raw Text */}
+            {bulkImportMode === 'paste' && (
+              <div className="space-y-3">
+                <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg text-xs text-blue-950 space-y-1">
+                  <div className="font-semibold flex items-center space-x-1.5">
+                    <Info className="w-4 h-4 text-blue-700" />
+                    <span>Paste Rows Directly from Excel or Google Sheets</span>
+                  </div>
+                  <p className="text-[11px] text-slate-700">
+                    Copy columns from your spreadsheet and paste below. Supports Tab-delimited (standard clipboard copy), Comma-separated (CSV), Semicolon, or Space.
+                  </p>
+                  <p className="text-[10px] font-mono text-blue-800">
+                    Format: <strong>PRN [Tab] Student Name [Tab] Semester [Tab] Section</strong>
+                    <br />
+                    (If pasting only 2 columns: PRN [Tab] Name, the default semester and section selected below will be applied).
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Default Semester (if not included in text)
+                    </label>
+                    <select
+                      value={pasteDefaultSem}
+                      onChange={(e) => setPasteDefaultSem(Number(e.target.value))}
+                      className="w-full py-1.5 px-3 text-xs border border-slate-300 rounded-lg bg-white"
+                    >
+                      {[1, 2, 3, 4, 5, 6, 7, 8].map((s) => (
+                        <option key={s} value={s}>
+                          Semester {s}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Default Section (if not included in text)
+                    </label>
+                    <select
+                      value={pasteDefaultSec}
+                      onChange={(e) => setPasteDefaultSec(e.target.value)}
+                      className="w-full py-1.5 px-3 text-xs border border-slate-300 rounded-lg bg-white"
+                    >
+                      {['A', 'B', 'C', 'D'].map((sec) => (
+                        <option key={sec} value={sec}>
+                          Section {sec}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <textarea
+                    rows={6}
+                    value={pastedStudentText}
+                    onChange={(e) => setPastedStudentText(e.target.value)}
+                    placeholder={`24070521001\tAditya Kumar\t5\tA\n24070521002\tSneha Deshmukh\t5\tA\n24070521003\tRohan Sharma\t5\tB`}
+                    className="w-full p-3 font-mono text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white placeholder-slate-400"
+                  />
+                </div>
+
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={handleParsePastedStudentText}
+                    className="px-4 py-2 bg-blue-900 hover:bg-blue-800 text-white text-xs font-semibold rounded-lg shadow-xs transition cursor-pointer"
+                  >
+                    Parse & Validate Pasted Data
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Global Setting: Duplicate Handling */}
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs flex items-center justify-between gap-3">
+              <div className="space-y-0.5">
+                <span className="font-semibold text-slate-900 block">Existing Student Record Handling</span>
+                <p className="text-[11px] text-slate-500">
+                  Choose whether to update details (semester, section, name) for student PRNs that already exist in the database.
+                </p>
+              </div>
+              <label className="flex items-center space-x-2 shrink-0 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={updateExistingStudents}
+                  onChange={(e) => setUpdateExistingStudents(e.target.checked)}
+                  className="rounded text-blue-900 focus:ring-blue-500 h-4 w-4"
+                />
+                <span className="font-semibold text-slate-800 text-xs">
+                  {updateExistingStudents ? 'Update Existing Records' : 'Skip Existing Records'}
+                </span>
+              </label>
+            </div>
+
+            {/* Validation Breakdown & Preview */}
+            {multiImportResult && (
+              <div className="space-y-3 pt-2">
+                {/* 4 Summary Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                  <div className="p-3 bg-emerald-50 text-emerald-900 rounded-lg border border-emerald-200">
+                    <strong className="text-xl block font-bold font-mono">
+                      {multiImportResult.validRecords.length}
+                    </strong>
+                    <span className="text-[11px] font-medium">Valid New Records</span>
+                  </div>
+
+                  <div className="p-3 bg-blue-50 text-blue-900 rounded-lg border border-blue-200">
+                    <div className="flex items-center justify-center space-x-1">
+                      <strong className="text-xl font-bold font-mono">
+                        {multiImportResult.existingInDbRecords.length}
+                      </strong>
+                    </div>
+                    <span className="text-[11px] font-medium">
+                      Already in Database ({updateExistingStudents ? 'Will Update' : 'Will Skip'})
+                    </span>
+                  </div>
+
+                  <div className="p-3 bg-amber-50 text-amber-900 rounded-lg border border-amber-200">
+                    <strong className="text-xl block font-bold font-mono">
+                      {multiImportResult.duplicateWithinBatch.length}
+                    </strong>
+                    <span className="text-[11px] font-medium">Batch Duplicates (Skipped)</span>
+                  </div>
+
+                  <div className="p-3 bg-rose-50 text-rose-900 rounded-lg border border-rose-200">
+                    <strong className="text-xl block font-bold font-mono">
+                      {multiImportResult.invalidRecords.length}
+                    </strong>
+                    <span className="text-[11px] font-medium">Invalid / Incomplete</span>
+                  </div>
+                </div>
+
+                {/* Preview Filter Tabs & Search Bar */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-slate-200">
+                  <div className="flex flex-wrap items-center gap-1 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewFilterTab('valid')}
+                      className={`px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
+                        previewFilterTab === 'valid'
+                          ? 'bg-emerald-700 text-white'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      Valid New ({multiImportResult.validRecords.length})
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setPreviewFilterTab('existing')}
+                      className={`px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
+                        previewFilterTab === 'existing'
+                          ? 'bg-blue-900 text-white'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      Already in DB ({multiImportResult.existingInDbRecords.length})
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setPreviewFilterTab('duplicate')}
+                      className={`px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
+                        previewFilterTab === 'duplicate'
+                          ? 'bg-amber-600 text-white'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      Batch Duplicates ({multiImportResult.duplicateWithinBatch.length})
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setPreviewFilterTab('invalid')}
+                      className={`px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
+                        previewFilterTab === 'invalid'
+                          ? 'bg-rose-600 text-white'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      Invalid ({multiImportResult.invalidRecords.length})
+                    </button>
+                  </div>
+
+                  {/* Search within preview */}
+                  <div className="relative w-full sm:w-56">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                    <input
+                      type="text"
+                      placeholder="Search preview records..."
+                      value={previewSearchTerm}
+                      onChange={(e) => setPreviewSearchTerm(e.target.value)}
+                      className="w-full pl-8 pr-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                {/* Preview Table */}
+                <div className="max-h-56 overflow-y-auto border border-slate-200 rounded-lg text-xs">
+                  {/* Tab 1: Valid New */}
+                  {previewFilterTab === 'valid' && (
+                    <table className="min-w-full divide-y divide-slate-200">
+                      <thead className="bg-slate-50 text-slate-600 font-semibold sticky top-0">
+                        <tr>
+                          <th className="py-2 px-3 text-left">PRN</th>
+                          <th className="py-2 px-3 text-left">Student Name</th>
+                          <th className="py-2 px-3 text-center">Sem</th>
+                          <th className="py-2 px-3 text-center">Sec</th>
+                          <th className="py-2 px-3 text-left">Source File / Entry</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {multiImportResult.validRecords
+                          .filter((r) => {
+                            const q = previewSearchTerm.toLowerCase();
+                            return !q || r.prn.toLowerCase().includes(q) || r.name.toLowerCase().includes(q);
+                          })
+                          .slice(0, 50)
+                          .map((r, i) => (
+                            <tr key={i} className="hover:bg-slate-50">
+                              <td className="py-1.5 px-3 font-mono font-bold text-slate-900">{r.prn}</td>
+                              <td className="py-1.5 px-3 text-slate-800 font-medium">{r.name}</td>
+                              <td className="py-1.5 px-3 text-center">Sem {r.semester}</td>
+                              <td className="py-1.5 px-3 text-center font-semibold">{r.section}</td>
+                              <td className="py-1.5 px-3 text-slate-500 text-[11px] truncate max-w-xs">
+                                {r.sourceFile || 'Upload'}
+                              </td>
+                            </tr>
+                          ))}
+                        {multiImportResult.validRecords.length === 0 && (
+                          <tr>
+                            <td colSpan={5} className="py-6 text-center text-slate-400">
+                              No new valid student records to insert.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {/* Tab 2: Existing in DB */}
+                  {previewFilterTab === 'existing' && (
+                    <table className="min-w-full divide-y divide-slate-200">
+                      <thead className="bg-slate-50 text-slate-600 font-semibold sticky top-0">
+                        <tr>
+                          <th className="py-2 px-3 text-left">PRN</th>
+                          <th className="py-2 px-3 text-left">Student Name</th>
+                          <th className="py-2 px-3 text-center">Sem</th>
+                          <th className="py-2 px-3 text-center">Sec</th>
+                          <th className="py-2 px-3 text-center">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {multiImportResult.existingInDbRecords
+                          .filter((r) => {
+                            const q = previewSearchTerm.toLowerCase();
+                            return !q || r.prn.toLowerCase().includes(q) || r.name.toLowerCase().includes(q);
+                          })
+                          .slice(0, 50)
+                          .map((r, i) => (
+                            <tr key={i} className="hover:bg-slate-50">
+                              <td className="py-1.5 px-3 font-mono font-bold text-slate-900">{r.prn}</td>
+                              <td className="py-1.5 px-3 text-slate-800">{r.name}</td>
+                              <td className="py-1.5 px-3 text-center">Sem {r.semester}</td>
+                              <td className="py-1.5 px-3 text-center font-semibold">{r.section}</td>
+                              <td className="py-1.5 px-3 text-center">
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                    updateExistingStudents
+                                      ? 'bg-blue-100 text-blue-800'
+                                      : 'bg-slate-100 text-slate-600'
+                                  }`}
+                                >
+                                  {updateExistingStudents ? 'Will Update' : 'Will Skip'}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        {multiImportResult.existingInDbRecords.length === 0 && (
+                          <tr>
+                            <td colSpan={5} className="py-6 text-center text-slate-400">
+                              No existing database conflicts found.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {/* Tab 3: Batch Duplicates */}
+                  {previewFilterTab === 'duplicate' && (
+                    <table className="min-w-full divide-y divide-slate-200">
+                      <thead className="bg-slate-50 text-slate-600 font-semibold sticky top-0">
+                        <tr>
+                          <th className="py-2 px-3 text-left">PRN</th>
+                          <th className="py-2 px-3 text-left">Student Name</th>
+                          <th className="py-2 px-3 text-left">Source File</th>
+                          <th className="py-2 px-3 text-left">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {multiImportResult.duplicateWithinBatch
+                          .filter((r) => {
+                            const q = previewSearchTerm.toLowerCase();
+                            return !q || r.prn.toLowerCase().includes(q) || r.name.toLowerCase().includes(q);
+                          })
+                          .slice(0, 50)
+                          .map((r, i) => (
+                            <tr key={i} className="hover:bg-slate-50">
+                              <td className="py-1.5 px-3 font-mono font-bold text-amber-900">{r.prn}</td>
+                              <td className="py-1.5 px-3 text-slate-800">{r.name}</td>
+                              <td className="py-1.5 px-3 text-slate-500 text-[11px]">{r.sourceFile}</td>
+                              <td className="py-1.5 px-3 text-amber-700 text-[11px] font-medium">{r.reason}</td>
+                            </tr>
+                          ))}
+                        {multiImportResult.duplicateWithinBatch.length === 0 && (
+                          <tr>
+                            <td colSpan={4} className="py-6 text-center text-slate-400">
+                              No duplicate records within uploaded batch.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {/* Tab 4: Invalid */}
+                  {previewFilterTab === 'invalid' && (
+                    <table className="min-w-full divide-y divide-slate-200">
+                      <thead className="bg-slate-50 text-slate-600 font-semibold sticky top-0">
+                        <tr>
+                          <th className="py-2 px-3 text-center w-16">Row #</th>
+                          <th className="py-2 px-3 text-left">Source</th>
+                          <th className="py-2 px-3 text-left">Error Reason</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {multiImportResult.invalidRecords.slice(0, 50).map((r, i) => (
+                          <tr key={i} className="hover:bg-slate-50">
+                            <td className="py-1.5 px-3 text-center font-mono font-bold text-slate-500">
+                              {r.rowNumber}
+                            </td>
+                            <td className="py-1.5 px-3 text-slate-600 text-[11px]">{r.sourceFile}</td>
+                            <td className="py-1.5 px-3 text-rose-700 font-medium">{r.reason}</td>
+                          </tr>
+                        ))}
+                        {multiImportResult.invalidRecords.length === 0 && (
+                          <tr>
+                            <td colSpan={3} className="py-6 text-center text-slate-400">
+                              No invalid or malformed rows detected.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Modal Footer */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-slate-200">
               <button
                 type="button"
-                onClick={() => setImportModalOpen(false)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                onClick={downloadStudentExcelTemplate}
+                className="inline-flex items-center space-x-1.5 text-xs text-blue-700 hover:text-blue-900 font-semibold cursor-pointer"
               >
-                Cancel
+                <Download className="w-3.5 h-3.5" />
+                <span>Download Sample Student Template (.xlsx)</span>
               </button>
-              <button
-                type="button"
-                id="confirm-import-btn"
-                disabled={!importResult || importResult.validRecords.length === 0}
-                onClick={handleConfirmExcelImport}
-                className="px-5 py-2 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg shadow transition disabled:opacity-40"
-              >
-                Confirm Import ({importResult?.validRecords.length || 0} Records)
-              </button>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImportModalOpen(false);
+                    setSelectedStudentFiles([]);
+                    setPastedStudentText('');
+                    setMultiImportResult(null);
+                  }}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 cursor-pointer"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="button"
+                  id="confirm-bulk-student-import-btn"
+                  disabled={
+                    !multiImportResult ||
+                    (multiImportResult.validRecords.length === 0 &&
+                      (!updateExistingStudents || multiImportResult.existingInDbRecords.length === 0)) ||
+                    importingBatch
+                  }
+                  onClick={handleConfirmBulkStudentImport}
+                  className="px-5 py-2 text-xs font-semibold bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg shadow-xs transition disabled:opacity-40 flex items-center space-x-1.5 cursor-pointer"
+                >
+                  {importingBatch && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                  <span>
+                    Confirm Import (
+                    {(multiImportResult?.validRecords.length || 0) +
+                      (updateExistingStudents ? multiImportResult?.existingInDbRecords.length || 0 : 0)}{' '}
+                    Students)
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2961,7 +3531,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                     <div>
                       <span className="text-slate-400 block text-[10px] uppercase font-semibold">Date & Time:</span>
                       <span>
-                        {it.date} ({it.start_time} - {it.end_time})
+                        {formatDateDMY(it.date)} ({it.start_time} - {it.end_time})
                       </span>
                     </div>
                     <div>
@@ -3093,7 +3663,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
               <div>
                 <h3 className="text-base font-bold text-slate-900">{selectedEventForView.title}</h3>
                 <p className="text-xs text-slate-500">
-                  {selectedEventForView.date} • {selectedEventForView.venue} • {eventAttendees.length} Attendees
+                  {formatDateDMY(selectedEventForView.date)} • {selectedEventForView.venue} • {eventAttendees.length} Attendees
                 </p>
               </div>
               <button

@@ -5,8 +5,12 @@ import {
   getSubjectsList,
   getAttendanceRequests,
   createAttendanceRequest,
+  updateAttendanceRequest,
+  deleteAttendanceRequest,
   getStudents,
 } from '../services/dbService.ts';
+import { formatDateDMY } from '../utils/dateUtils.ts';
+import { SearchableSubjectCombobox, SearchableFacultyCombobox } from './SearchableCombobox.tsx';
 import {
   GraduationCap,
   CalendarPlus,
@@ -25,6 +29,8 @@ import {
   Users,
   Check,
   Sparkles,
+  Edit2,
+  Building2,
 } from 'lucide-react';
 
 interface StudentPortalProps {
@@ -56,6 +62,9 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
   const [studentSearchTerm, setStudentSearchTerm] = useState<string>('');
   const [isSearchOpen, setIsSearchOpen] = useState<boolean>(false);
   const [requestsSearchTerm, setRequestsSearchTerm] = useState<string>('');
+
+  // Request editing state (for modifying existing pending requests)
+  const [editingRequestId, setEditingRequestId] = useState<string | null>(null);
 
   // Form State for multi-item attendance update request
   const [requestItems, setRequestItems] = useState<AttendanceRequestItem[]>([
@@ -145,7 +154,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
       if (field === 'subject_id') {
         const selectedSub = subjectsList.find((s) => s.id === value);
         item.subject_id = value;
-        item.subject_name = selectedSub ? selectedSub.name : '';
+        item.subject_name = selectedSub ? `${selectedSub.code}: ${selectedSub.name}` : '';
       } else if (field === 'faculty_id') {
         const selectedFac = facultyList.find((f) => f.id === value);
         item.faculty_id = value;
@@ -157,6 +166,109 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
       updated[index] = item;
       return updated;
     });
+  };
+
+  const handleItemSubjectSelect = (index: number, sub: Subject | null) => {
+    setRequestItems((prev) => {
+      const updated = [...prev];
+      updated[index] = {
+        ...updated[index],
+        subject_id: sub ? sub.id : '',
+        subject_name: sub ? `${sub.code}: ${sub.name}` : '',
+      };
+      return updated;
+    });
+  };
+
+  const handleItemFacultySelect = (index: number, fac: Faculty | null) => {
+    setRequestItems((prev) => {
+      const updated = [...prev];
+      updated[index] = {
+        ...updated[index],
+        faculty_id: fac ? fac.id : '',
+        faculty_name: fac ? fac.name : '',
+      };
+      return updated;
+    });
+  };
+
+  const handleStartEditRequest = (req: AttendanceRequest) => {
+    setEditingRequestId(req.id);
+    if (isUniversal) {
+      const matched = studentsList.find((s) => s.prn === req.student_prn);
+      if (matched) {
+        setSelectedStudent(matched);
+        setStudentSearchTerm(`${matched.name} (${matched.prn})`);
+      } else {
+        setSelectedStudent({
+          id: req.student_id,
+          prn: req.student_prn,
+          name: req.student_name,
+          semester: req.semester,
+          section: req.section,
+          username: '',
+          status: 'active',
+          created_at: '',
+        });
+        setStudentSearchTerm(`${req.student_name} (${req.student_prn})`);
+      }
+    }
+    setCurrentAttendancePct(
+      req.current_attendance_percentage !== null && req.current_attendance_percentage !== undefined
+        ? String(req.current_attendance_percentage)
+        : ''
+    );
+    setRequestItems(
+      req.items.map((it, idx) => ({
+        id: it.id || `edit-${idx}-${Date.now()}`,
+        date: it.date,
+        start_time: it.start_time,
+        end_time: it.end_time,
+        event_title: it.event_title,
+        subject_id: it.subject_id,
+        subject_name: it.subject_name,
+        faculty_id: it.faculty_id,
+        faculty_name: it.faculty_name,
+        reason: it.reason || '',
+        status: it.status || 'pending',
+      }))
+    );
+    setErrorMessage('');
+    setSuccessMessage('');
+    onSelectTab('new_request');
+  };
+
+  const handleCancelEdit = () => {
+    setEditingRequestId(null);
+    setRequestItems([
+      {
+        id: `item-${Date.now()}`,
+        date: new Date().toISOString().split('T')[0],
+        start_time: '10:00',
+        end_time: '11:00',
+        event_title: '',
+        subject_id: '',
+        subject_name: '',
+        faculty_id: '',
+        faculty_name: '',
+        reason: '',
+      },
+    ]);
+    setCurrentAttendancePct('');
+    setErrorMessage('');
+    setSuccessMessage('');
+  };
+
+  const handleDeleteRequest = async (requestId: string) => {
+    if (!window.confirm('Are you sure you want to withdraw this attendance request? This cannot be undone.')) {
+      return;
+    }
+    try {
+      await deleteAttendanceRequest(requestId, currentUser);
+      await loadData();
+    } catch (err: any) {
+      alert(`Failed to withdraw request: ${err?.message || err}`);
+    }
   };
 
   const handleSubmitRequest = async (e: React.FormEvent) => {
@@ -191,11 +303,11 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
         return;
       }
       if (!it.subject_id) {
-        setErrorMessage(`Entry #${i + 1}: Please select a Subject from the Master list.`);
+        setErrorMessage(`Entry #${i + 1}: Please select a Subject using the searchable subject list.`);
         return;
       }
       if (!it.faculty_id) {
-        setErrorMessage(`Entry #${i + 1}: Please select a Faculty member from the Master list.`);
+        setErrorMessage(`Entry #${i + 1}: Please select a Faculty member using the searchable faculty list.`);
         return;
       }
       if (!it.event_title.trim()) {
@@ -217,23 +329,42 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
 
     setSubmitting(true);
     try {
-      await createAttendanceRequest(
-        {
-          student_id: targetStudentId,
-          student_prn: targetStudentPrn,
-          student_name: targetStudentName,
-          semester: targetSemester,
-          section: targetSection,
-          current_attendance_percentage: parsedPct,
-          items: requestItems,
-        },
-        currentUser
-      );
+      if (editingRequestId) {
+        await updateAttendanceRequest(
+          editingRequestId,
+          {
+            student_id: targetStudentId,
+            student_prn: targetStudentPrn,
+            student_name: targetStudentName,
+            semester: targetSemester,
+            section: targetSection,
+            current_attendance_percentage: parsedPct,
+            items: requestItems,
+          },
+          currentUser
+        );
 
-      const successNotice = isUniversal
-        ? `Attendance Update Request for "${targetStudentName}" (PRN: ${targetStudentPrn}) submitted successfully! Awaiting Admin review.`
-        : 'Attendance Update Request submitted successfully! Awaiting Admin review.';
-      setSuccessMessage(successNotice);
+        setSuccessMessage('Attendance Update Request was successfully modified and updated!');
+        setEditingRequestId(null);
+      } else {
+        await createAttendanceRequest(
+          {
+            student_id: targetStudentId,
+            student_prn: targetStudentPrn,
+            student_name: targetStudentName,
+            semester: targetSemester,
+            section: targetSection,
+            current_attendance_percentage: parsedPct,
+            items: requestItems,
+          },
+          currentUser
+        );
+
+        const successNotice = isUniversal
+          ? `Attendance Update Request for "${targetStudentName}" (PRN: ${targetStudentPrn}) submitted successfully! Awaiting Admin review.`
+          : 'Attendance Update Request submitted successfully! Awaiting Admin review.';
+        setSuccessMessage(successNotice);
+      }
 
       // Reset form
       setCurrentAttendancePct('');
@@ -370,7 +501,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                   <div key={req.id} className="p-4 hover:bg-slate-50 transition flex items-center justify-between">
                     <div>
                       <div className="flex items-center space-x-2">
-                        <span className="text-xs text-slate-500">{new Date(req.created_at).toLocaleDateString()}</span>
+                        <span className="text-xs text-slate-500">{formatDateDMY(req.created_at)}</span>
                         <span
                           className={`text-xs px-2 py-0.5 rounded-full font-bold uppercase ${
                             req.status === 'approved'
@@ -418,16 +549,38 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
           <div className="p-6 border-b border-slate-200 bg-slate-50">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
-                <h1 className="text-xl font-bold text-slate-900">Attendance Update Request</h1>
+                <div className="flex items-center space-x-2">
+                  <h1 className="text-xl font-bold text-slate-900">
+                    {editingRequestId ? 'Update Attendance Request' : 'Attendance Update Request'}
+                  </h1>
+                  {editingRequestId && (
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-bold font-mono bg-amber-100 text-amber-900 border border-amber-300">
+                      Editing Request #{editingRequestId.slice(0, 8)}
+                    </span>
+                  )}
+                </div>
                 <p className="text-xs text-slate-600 mt-1">
-                  Submit attendance correction entries for missed lectures due to verified college events or official duty.
+                  {editingRequestId
+                    ? 'Modify missing lecture entries, dates, searchable subjects, and faculty details for this pending request.'
+                    : 'Submit attendance correction entries for missed lectures due to verified college events or official duty.'}
                 </p>
               </div>
-              {isUniversal && (
-                <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-900 border border-blue-200">
-                  <Sparkles className="w-3.5 h-3.5 mr-1 text-blue-700" /> Universal Student Mode
-                </span>
-              )}
+              <div className="flex items-center space-x-2">
+                {editingRequestId && (
+                  <button
+                    type="button"
+                    onClick={handleCancelEdit}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 cursor-pointer"
+                  >
+                    ✕ Cancel Editing
+                  </button>
+                )}
+                {isUniversal && (
+                  <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-900 border border-blue-200">
+                    <Sparkles className="w-3.5 h-3.5 mr-1 text-blue-700" /> Universal Student Mode
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
@@ -755,45 +908,31 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                       />
                     </div>
 
-                    {/* Subject dropdown from Master List */}
+                    {/* Searchable Subject Combobox from Master List */}
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Subject (Master List) *
-                      </label>
-                      <select
+                      <SearchableSubjectCombobox
+                        label="Subject (Master List)"
                         required
-                        value={item.subject_id}
-                        onChange={(e) => handleItemChange(index, 'subject_id', e.target.value)}
-                        className="w-full text-xs px-3 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white"
-                      >
-                        <option value="">-- Select Subject --</option>
-                        {subjectsList.map((sub) => (
-                          <option key={sub.id} value={sub.id}>
-                            {sub.code}: {sub.name}
-                          </option>
-                        ))}
-                      </select>
+                        subjects={subjectsList}
+                        selectedSubjectId={item.subject_id}
+                        onSelect={(sub) => handleItemSubjectSelect(index, sub)}
+                        placeholder="Search code or subject title..."
+                        id={`subject-select-${index}`}
+                      />
                     </div>
 
-                    {/* Faculty independent selection */}
+                    {/* Searchable Faculty Combobox from Master List */}
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Faculty Member *
-                      </label>
-                      <select
+                      <SearchableFacultyCombobox
+                        label="Faculty Member"
                         required
-                        value={item.faculty_id}
-                        onChange={(e) => handleItemChange(index, 'faculty_id', e.target.value)}
-                        className="w-full text-xs px-3 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white"
-                      >
-                        <option value="">-- Select Faculty --</option>
-                        {facultyList.map((fac) => (
-                          <option key={fac.id} value={fac.id}>
-                            {fac.name} ({fac.department})
-                          </option>
-                        ))}
-                      </select>
-                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        facultyList={facultyList}
+                        selectedFacultyId={item.faculty_id}
+                        onSelect={(fac) => handleItemFacultySelect(index, fac)}
+                        placeholder="Search faculty name or dept..."
+                        id={`faculty-select-${index}`}
+                      />
+                      <p className="text-[10px] text-slate-500 mt-1">
                         *Subject & Faculty are selected independently per SIT guidelines.
                       </p>
                     </div>
@@ -831,10 +970,18 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                 type="submit"
                 id="submit-attendance-request-btn"
                 disabled={submitting}
-                className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 text-xs font-semibold px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg shadow transition disabled:opacity-50"
+                className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 text-xs font-semibold px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg shadow transition disabled:opacity-50 cursor-pointer"
               >
                 <Send className="w-4 h-4" />
-                <span>{submitting ? 'Submitting Request...' : 'Submit Request'}</span>
+                <span>
+                  {submitting
+                    ? editingRequestId
+                      ? 'Saving Updates...'
+                      : 'Submitting Request...'
+                    : editingRequestId
+                    ? 'Update & Save Request'
+                    : 'Submit Request'}
+                </span>
               </button>
             </div>
           </form>
@@ -955,7 +1102,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                           <span>Status: {req.status}</span>
                         </span>
                         <span className="text-xs text-slate-500">
-                          Submitted on {new Date(req.created_at).toLocaleDateString()}
+                          Submitted on {formatDateDMY(req.created_at)}
                         </span>
                         <span className="text-xs px-2.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
                           Current Att.:{' '}
@@ -969,7 +1116,31 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                         </span>
                       </div>
 
-                      <div className="text-xs text-slate-500 font-mono">Request ID: {req.id.slice(0, 8)}</div>
+                      <div className="flex items-center space-x-2">
+                        <span className="text-xs text-slate-500 font-mono">Request ID: {req.id.slice(0, 8)}</span>
+                        {req.status === 'pending' && (
+                          <div className="flex items-center space-x-1.5 ml-2">
+                            <button
+                              type="button"
+                              onClick={() => handleStartEditRequest(req)}
+                              className="inline-flex items-center space-x-1 px-2.5 py-1 text-xs font-semibold text-blue-700 hover:text-blue-900 bg-blue-50 hover:bg-blue-100 rounded-lg border border-blue-200 transition cursor-pointer"
+                              title="Edit this attendance request"
+                            >
+                              <Edit2 className="w-3 h-3" />
+                              <span>Edit</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteRequest(req.id)}
+                              className="inline-flex items-center space-x-1 px-2.5 py-1 text-xs font-semibold text-rose-600 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition cursor-pointer"
+                              title="Withdraw and cancel this attendance request"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Withdraw</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
 
                     {/* Target Student Identity Pill */}
@@ -1013,7 +1184,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                         <tbody className="divide-y divide-slate-100 bg-white">
                           {req.items?.map((item, idx) => (
                             <tr key={idx} className="hover:bg-slate-50">
-                              <td className="py-2 px-3 font-medium text-slate-900 whitespace-nowrap">{item.date}</td>
+                              <td className="py-2 px-3 font-medium text-slate-900 whitespace-nowrap">{formatDateDMY(item.date)}</td>
                               <td className="py-2 px-3 text-slate-600 whitespace-nowrap">
                                 {item.start_time} - {item.end_time}
                               </td>

@@ -527,6 +527,50 @@ export async function createAttendanceRequest(
   }
 }
 
+export async function updateAttendanceRequest(
+  requestId: string,
+  data: Partial<Omit<AttendanceRequest, 'id' | 'created_at'>>,
+  user: CurrentUser
+): Promise<void> {
+  try {
+    const ref = doc(db, 'attendance_requests', requestId);
+    const updatePayload: any = {
+      ...data,
+      updated_at: new Date().toISOString(),
+    };
+    await updateDoc(ref, updatePayload);
+    await logAudit(
+      user,
+      'Updated attendance update request',
+      'attendance_requests',
+      requestId,
+      '',
+      `Updated ${data.items?.length || 0} item(s)`
+    );
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `attendance_requests/${requestId}`);
+    throw error;
+  }
+}
+
+export async function deleteAttendanceRequest(requestId: string, user: CurrentUser): Promise<void> {
+  try {
+    const ref = doc(db, 'attendance_requests', requestId);
+    await deleteDoc(ref);
+    await logAudit(
+      user,
+      'Deleted attendance request',
+      'attendance_requests',
+      requestId,
+      '',
+      'Removed pending attendance request'
+    );
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `attendance_requests/${requestId}`);
+    throw error;
+  }
+}
+
 export async function reviewAttendanceRequest(
   requestId: string,
   status: 'pending' | 'approved' | 'rejected' | 'partially_approved',
@@ -950,6 +994,96 @@ export async function clearAllDatabaseData(user?: CurrentUser): Promise<{ succes
   } catch (error) {
     console.error('Error in clearAllDatabaseData:', error);
     return { success: false, message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// ----------------------------------------------------
+// BULK STUDENT USERS IMPORT (HIGH-PERFORMANCE BATCH WRITE)
+// ----------------------------------------------------
+export interface BulkStudentImportOptions {
+  updateExisting?: boolean;
+}
+
+export async function bulkCreateStudents(
+  studentList: Array<Omit<Student, 'id' | 'created_at'> & { id?: string }>,
+  user: CurrentUser,
+  options: BulkStudentImportOptions = {}
+): Promise<{ created: number; updated: number; total: number }> {
+  try {
+    const existingSnap = await getDocs(collection(db, 'students'));
+    const existingByPrn = new Map<string, { id: string; data: any }>();
+    existingSnap.docs.forEach((d) => {
+      const data = d.data();
+      if (data.prn) {
+        existingByPrn.set(String(data.prn).trim().toLowerCase(), { id: d.id, data });
+      }
+    });
+
+    let createdCount = 0;
+    let updatedCount = 0;
+    const now = new Date().toISOString();
+
+    // Firestore batch limit is 500 operations. We chunk into 400 operations.
+    const CHUNK_SIZE = 400;
+    for (let i = 0; i < studentList.length; i += CHUNK_SIZE) {
+      const chunk = studentList.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+
+      for (const s of chunk) {
+        const cleanPrn = String(s.prn).trim();
+        const prnKey = cleanPrn.toLowerCase();
+        const existing = existingByPrn.get(prnKey);
+
+        if (existing) {
+          if (options.updateExisting) {
+            const ref = doc(db, 'students', existing.id);
+            batch.update(ref, {
+              name: s.name.trim(),
+              semester: Number(s.semester),
+              section: String(s.section).trim().toUpperCase(),
+              username: s.username || s.name.trim().toLowerCase().replace(/\s+/g, '.'),
+              status: s.status || 'active',
+              updated_at: now,
+            });
+            updatedCount++;
+          }
+        } else {
+          const colRef = collection(db, 'students');
+          const newDocRef = doc(colRef);
+          batch.set(newDocRef, {
+            prn: cleanPrn,
+            name: s.name.trim(),
+            semester: Number(s.semester),
+            section: String(s.section).trim().toUpperCase(),
+            username: s.username || s.name.trim().toLowerCase().replace(/\s+/g, '.'),
+            status: s.status || 'active',
+            created_at: now,
+            updated_at: now,
+          });
+          createdCount++;
+        }
+      }
+
+      await batch.commit();
+    }
+
+    await logAudit(
+      user,
+      'Bulk imported student user records',
+      'students',
+      'bulk-import',
+      '',
+      `Imported ${createdCount} new, updated ${updatedCount} student records (Total submitted: ${studentList.length})`
+    );
+
+    return {
+      created: createdCount,
+      updated: updatedCount,
+      total: createdCount + updatedCount,
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, 'students');
+    throw error;
   }
 }
 

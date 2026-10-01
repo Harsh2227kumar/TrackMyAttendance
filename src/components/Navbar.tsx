@@ -52,7 +52,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     ],
     ADMIN: [
       { id: 'dashboard', label: 'Dashboard' },
-      { id: 'students', label: 'Students' },
+      { id: 'students', label: 'Admin Users (Students)' },
       { id: 'faculty', label: 'Faculty' },
       { id: 'subjects', label: 'Subjects' },
       { id: 'events', label: 'Events' },

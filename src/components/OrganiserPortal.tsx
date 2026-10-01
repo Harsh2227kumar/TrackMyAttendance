@@ -9,6 +9,7 @@ import {
   submitEventAttendance,
 } from '../services/dbService.ts';
 import { generateEventAttendancePDF } from '../utils/exportImport.ts';
+import { formatDateDMY } from '../utils/dateUtils.ts';
 import {
   Calendar,
   Clock,
@@ -341,7 +342,7 @@ export const OrganiserPortal: React.FC<OrganiserPortalProps> = ({ currentUser, a
               <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500 mt-2">
                 <span className="flex items-center space-x-1">
                   <Calendar className="w-3.5 h-3.5 text-blue-800" />
-                  <span className="text-slate-700">{activeEvent.date}</span>
+                  <span className="text-slate-700">{formatDateDMY(activeEvent.date)}</span>
                 </span>
                 <span className="flex items-center space-x-1">
                   <Clock className="w-3.5 h-3.5 text-blue-800" />
@@ -733,7 +734,7 @@ export const OrganiserPortal: React.FC<OrganiserPortalProps> = ({ currentUser, a
                         >
                           {event.status}
                         </span>
-                        <span className="text-xs text-slate-500 font-medium">{event.date}</span>
+                        <span className="text-xs text-slate-500 font-medium">{formatDateDMY(event.date)}</span>
                       </div>
                       <h3 className="text-sm font-bold text-slate-900 line-clamp-1">{event.title}</h3>
                       <div className="text-xs text-slate-500 mt-2 space-y-1">

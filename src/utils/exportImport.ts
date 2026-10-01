@@ -2,6 +2,9 @@ import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { EventRecord, EventAttendance, ReportRow } from '../types/index.ts';
+import { formatDateDMY } from './dateUtils.ts';
+
+export { formatDateDMY };
 
 export type ExportFormatType =
   | 'student_wise'
@@ -32,7 +35,7 @@ export function exportReportsToExcel(rows: ReportRow[], format: ExportFormatType
         Semester: r.semester,
         Section: r.section,
         'Request Status': (r.request_status || 'N/A').toUpperCase(),
-        Date: r.date,
+        Date: formatDateDMY(r.date),
         Time: r.time,
         Subject: r.subject_name || 'N/A',
         Faculty: r.faculty_name || 'N/A',
@@ -52,7 +55,7 @@ export function exportReportsToExcel(rows: ReportRow[], format: ExportFormatType
         Section: r.section,
         Subject: r.subject_name || 'N/A',
         Event: r.event_title,
-        Date: r.date,
+        Date: formatDateDMY(r.date),
         Time: r.time,
         'Request Status': r.request_status && r.request_status !== 'none' ? r.request_status.toUpperCase() : 'Standard',
         'Current Attendance %': formatAttendancePercentage(r.current_attendance_percentage),
@@ -62,7 +65,7 @@ export function exportReportsToExcel(rows: ReportRow[], format: ExportFormatType
     case 'event_wise':
       exportData = rows.map((r) => ({
         Event: r.event_title,
-        Date: r.date,
+        Date: formatDateDMY(r.date),
         Time: r.time,
         Venue: r.venue || 'Main Campus',
         PRN: r.prn,
@@ -81,7 +84,7 @@ export function exportReportsToExcel(rows: ReportRow[], format: ExportFormatType
         Name: r.student_name,
         Section: r.section,
         Event: r.event_title,
-        Date: r.date,
+        Date: formatDateDMY(r.date),
         Time: r.time,
         'Request Status': r.request_status && r.request_status !== 'none' ? r.request_status.toUpperCase() : 'Standard',
         'Current Attendance %': formatAttendancePercentage(r.current_attendance_percentage),
@@ -95,7 +98,7 @@ export function exportReportsToExcel(rows: ReportRow[], format: ExportFormatType
         Name: r.student_name,
         Semester: r.semester,
         Event: r.event_title,
-        Date: r.date,
+        Date: formatDateDMY(r.date),
         Time: r.time,
         'Request Status': r.request_status && r.request_status !== 'none' ? r.request_status.toUpperCase() : 'Standard',
         'Current Attendance %': formatAttendancePercentage(r.current_attendance_percentage),
@@ -124,7 +127,7 @@ export function exportReportsToExcel(rows: ReportRow[], format: ExportFormatType
         Semester: r.semester,
         Section: r.section,
         Event: r.event_title,
-        Date: r.date,
+        Date: formatDateDMY(r.date),
         Time: r.time,
         Subject: r.subject_name || 'N/A',
         Faculty: r.faculty_name || 'N/A',
@@ -138,7 +141,7 @@ export function exportReportsToExcel(rows: ReportRow[], format: ExportFormatType
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, 'Attendance');
 
-  const fileName = `${filenamePrefix}_${format}_${new Date().toISOString().split('T')[0]}.xlsx`;
+  const fileName = `${filenamePrefix}_${format}_${formatDateDMY(new Date())}.xlsx`;
   XLSX.writeFile(workbook, fileName);
 }
 
@@ -183,7 +186,7 @@ export function generateEventAttendancePDF(event: EventRecord, attendees: EventA
   doc.setFont('helvetica', 'bold');
   doc.text('Date:', 20, 56);
   doc.setFont('helvetica', 'normal');
-  doc.text(event.date, 34, 56);
+  doc.text(formatDateDMY(event.date), 34, 56);
 
   doc.setFont('helvetica', 'bold');
   doc.text('Time:', 75, 56);
@@ -269,7 +272,7 @@ export function generateEventAttendancePDF(event: EventRecord, attendees: EventA
     doc.text('Faculty Coordinator Signature: _______________________', 110, finalY);
   }
 
-  doc.save(`SIT_Attendance_${event.title.replace(/\s+/g, '_')}_${event.date}.pdf`);
+  doc.save(`SIT_Attendance_${event.title.replace(/\s+/g, '_')}_${formatDateDMY(event.date)}.pdf`);
 }
 
 // ----------------------------------------------------
@@ -286,6 +289,54 @@ export interface ExcelImportValidationResult {
   }>;
   duplicatePRNs: Array<{ prn: string; name: string; reason: string }>;
   invalidRecords: Array<{ rowNumber: number; raw: any; reason: string }>;
+  totalRead: number;
+}
+
+export interface StudentImportRecord {
+  prn: string;
+  name: string;
+  semester: number;
+  section: string;
+  username: string;
+  status: 'active';
+  sourceFile?: string;
+  rowNumber?: number;
+}
+
+export interface MultiFileSummary {
+  name: string;
+  size: number;
+  totalRows: number;
+  validCount: number;
+  existingCount: number;
+  duplicateCount: number;
+  invalidCount: number;
+}
+
+export interface MultiStudentImportValidationResult {
+  filesSummary: MultiFileSummary[];
+  validRecords: StudentImportRecord[];
+  existingInDbRecords: Array<{
+    prn: string;
+    name: string;
+    semester: number;
+    section: string;
+    sourceFile?: string;
+    reason: string;
+    record: StudentImportRecord;
+  }>;
+  duplicateWithinBatch: Array<{
+    prn: string;
+    name: string;
+    sourceFile?: string;
+    reason: string;
+  }>;
+  invalidRecords: Array<{
+    rowNumber: number;
+    sourceFile?: string;
+    raw: any;
+    reason: string;
+  }>;
   totalRead: number;
 }
 
@@ -370,6 +421,395 @@ export async function parseAndValidateStudentExcel(
     duplicatePRNs,
     invalidRecords,
     totalRead: rows.length,
+  };
+}
+
+// ----------------------------------------------------
+// MULTI-FILE BULK STUDENT EXCEL/CSV PARSER
+// ----------------------------------------------------
+export async function parseAndValidateMultipleStudentFiles(
+  files: File[],
+  existingPRNs: Set<string>
+): Promise<MultiStudentImportValidationResult> {
+  const filesSummary: MultiFileSummary[] = [];
+  const validRecords: StudentImportRecord[] = [];
+  const existingInDbRecords: MultiStudentImportValidationResult['existingInDbRecords'] = [];
+  const duplicateWithinBatch: MultiStudentImportValidationResult['duplicateWithinBatch'] = [];
+  const invalidRecords: MultiStudentImportValidationResult['invalidRecords'] = [];
+  const seenInBatch = new Set<string>();
+
+  // Normalize existing PRN lookup for case-insensitivity
+  const lowerExistingPRNs = new Set(Array.from(existingPRNs).map((p) => p.trim().toLowerCase()));
+
+  let grandTotalRead = 0;
+
+  for (const file of files) {
+    let fileValid = 0;
+    let fileExisting = 0;
+    let fileDuplicate = 0;
+    let fileInvalid = 0;
+    let fileRowsCount = 0;
+
+    try {
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data, { type: 'array' });
+      const firstSheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[firstSheetName];
+      const rows: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+      fileRowsCount = rows.length;
+      grandTotalRead += rows.length;
+
+      rows.forEach((row, index) => {
+        const rowNumber = index + 2;
+
+        const prnKey = Object.keys(row).find((k) => {
+          const l = k.trim().toLowerCase();
+          return l === 'prn' || l.includes('roll') || l.includes('student_id') || l.includes('reg');
+        });
+        const nameKey = Object.keys(row).find((k) => {
+          const l = k.trim().toLowerCase();
+          return l === 'name' || l.includes('student name') || l.includes('full name');
+        });
+        const semKey = Object.keys(row).find((k) => {
+          const l = k.trim().toLowerCase();
+          return l.includes('sem');
+        });
+        const secKey = Object.keys(row).find((k) => {
+          const l = k.trim().toLowerCase();
+          return l.includes('sec') || l.includes('division') || l.includes('class');
+        });
+
+        const rawPRN = prnKey ? String(row[prnKey]).trim() : '';
+        const rawName = nameKey ? String(row[nameKey]).trim() : '';
+        const rawSem = semKey ? Number(row[semKey]) : NaN;
+        const rawSec = secKey ? String(row[secKey]).trim().toUpperCase() : '';
+
+        if (!rawPRN) {
+          fileInvalid++;
+          invalidRecords.push({
+            rowNumber,
+            sourceFile: file.name,
+            raw: row,
+            reason: 'Missing PRN column value',
+          });
+          return;
+        }
+
+        if (!rawName) {
+          fileInvalid++;
+          invalidRecords.push({
+            rowNumber,
+            sourceFile: file.name,
+            raw: row,
+            reason: 'Missing Student Name',
+          });
+          return;
+        }
+
+        if (isNaN(rawSem) || rawSem < 1 || rawSem > 8) {
+          fileInvalid++;
+          invalidRecords.push({
+            rowNumber,
+            sourceFile: file.name,
+            raw: row,
+            reason: `Invalid Semester (${semKey ? row[semKey] : 'Empty'}) - Must be 1 to 8`,
+          });
+          return;
+        }
+
+        if (!rawSec) {
+          fileInvalid++;
+          invalidRecords.push({
+            rowNumber,
+            sourceFile: file.name,
+            raw: row,
+            reason: 'Missing Section (e.g., A, B, C)',
+          });
+          return;
+        }
+
+        const studentRec: StudentImportRecord = {
+          prn: rawPRN,
+          name: rawName,
+          semester: rawSem,
+          section: rawSec,
+          username: rawName.toLowerCase().replace(/\s+/g, '.'),
+          status: 'active',
+          sourceFile: file.name,
+          rowNumber,
+        };
+
+        const prnLower = rawPRN.toLowerCase();
+
+        // 1. Check duplicate within current multi-file batch
+        if (seenInBatch.has(prnLower)) {
+          fileDuplicate++;
+          duplicateWithinBatch.push({
+            prn: rawPRN,
+            name: rawName,
+            sourceFile: file.name,
+            reason: `Duplicate PRN in batch (already encountered in this or previous file)`,
+          });
+          return;
+        }
+
+        seenInBatch.add(prnLower);
+
+        // 2. Check if student already exists in the Firestore database
+        if (lowerExistingPRNs.has(prnLower)) {
+          fileExisting++;
+          existingInDbRecords.push({
+            prn: rawPRN,
+            name: rawName,
+            semester: rawSem,
+            section: rawSec,
+            sourceFile: file.name,
+            reason: 'PRN already exists in database',
+            record: studentRec,
+          });
+          return;
+        }
+
+        // 3. Brand new valid record ready for import
+        fileValid++;
+        validRecords.push(studentRec);
+      });
+    } catch (err: any) {
+      fileInvalid++;
+      invalidRecords.push({
+        rowNumber: 1,
+        sourceFile: file.name,
+        raw: null,
+        reason: `Failed to parse file: ${err?.message || 'Unsupported format'}`,
+      });
+    }
+
+    filesSummary.push({
+      name: file.name,
+      size: file.size,
+      totalRows: fileRowsCount,
+      validCount: fileValid,
+      existingCount: fileExisting,
+      duplicateCount: fileDuplicate,
+      invalidCount: fileInvalid,
+    });
+  }
+
+  return {
+    filesSummary,
+    validRecords,
+    existingInDbRecords,
+    duplicateWithinBatch,
+    invalidRecords,
+    totalRead: grandTotalRead,
+  };
+}
+
+// ----------------------------------------------------
+// BULK RAW TEXT / COPY-PASTE TABULAR DATA PARSER
+// ----------------------------------------------------
+export function parseAndValidateStudentRawText(
+  rawText: string,
+  existingPRNs: Set<string>,
+  defaultSemester: number = 5,
+  defaultSection: string = 'A'
+): MultiStudentImportValidationResult {
+  const validRecords: StudentImportRecord[] = [];
+  const existingInDbRecords: MultiStudentImportValidationResult['existingInDbRecords'] = [];
+  const duplicateWithinBatch: MultiStudentImportValidationResult['duplicateWithinBatch'] = [];
+  const invalidRecords: MultiStudentImportValidationResult['invalidRecords'] = [];
+  const seenInBatch = new Set<string>();
+
+  const lowerExistingPRNs = new Set(Array.from(existingPRNs).map((p) => p.trim().toLowerCase()));
+
+  const lines = rawText.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+
+  let colMap = { prnIdx: 0, nameIdx: 1, semIdx: 2, secIdx: 3, hasHeader: false };
+
+  // Detect header in first line if present
+  if (lines.length > 0) {
+    const firstLineLower = lines[0].toLowerCase();
+    if (
+      firstLineLower.includes('prn') ||
+      firstLineLower.includes('student') ||
+      firstLineLower.includes('name') ||
+      firstLineLower.includes('semester')
+    ) {
+      // Determine delimiter of header line
+      let headerDelim = '\t';
+      if (firstLineLower.includes('\t')) headerDelim = '\t';
+      else if (firstLineLower.includes(',')) headerDelim = ',';
+      else if (firstLineLower.includes(';')) headerDelim = ';';
+      else if (firstLineLower.includes('|')) headerDelim = '|';
+
+      const hCols = lines[0].split(headerDelim).map((c) => c.trim().toLowerCase());
+      const pIdx = hCols.findIndex((c) => c === 'prn' || c.includes('roll') || c.includes('id'));
+      const nIdx = hCols.findIndex((c) => c === 'name' || c.includes('student'));
+      const sIdx = hCols.findIndex((c) => c.includes('sem'));
+      const cIdx = hCols.findIndex((c) => c.includes('sec') || c.includes('div'));
+
+      if (pIdx !== -1 && nIdx !== -1) {
+        colMap = {
+          prnIdx: pIdx,
+          nameIdx: nIdx,
+          semIdx: sIdx !== -1 ? sIdx : 2,
+          secIdx: cIdx !== -1 ? cIdx : 3,
+          hasHeader: true,
+        };
+      } else {
+        colMap.hasHeader = true;
+      }
+    }
+  }
+
+  const dataLines = colMap.hasHeader ? lines.slice(1) : lines;
+
+  dataLines.forEach((line, idx) => {
+    const rowNumber = (colMap.hasHeader ? idx + 2 : idx + 1);
+
+    // Delimiter detection
+    let delim = '\t';
+    if (line.includes('\t')) delim = '\t';
+    else if (line.includes(',')) delim = ',';
+    else if (line.includes(';')) delim = ';';
+    else if (line.includes('|')) delim = '|';
+    else delim = ' ';
+
+    let rawTokens: string[] = [];
+    if (delim === ' ') {
+      // Multiple spaces collapsed
+      rawTokens = line.split(/\s+/).map((t) => t.trim());
+    } else {
+      rawTokens = line.split(delim).map((t) => t.trim().replace(/^["']|["']$/g, ''));
+    }
+
+    if (rawTokens.length === 0 || (rawTokens.length === 1 && !rawTokens[0])) {
+      return;
+    }
+
+    let rawPRN = '';
+    let rawName = '';
+    let rawSem = defaultSemester;
+    let rawSec = defaultSection;
+
+    if (rawTokens.length >= 4) {
+      rawPRN = rawTokens[colMap.prnIdx] || rawTokens[0] || '';
+      rawName = rawTokens[colMap.nameIdx] || rawTokens[1] || '';
+      const semVal = Number(rawTokens[colMap.semIdx] || rawTokens[2]);
+      rawSem = !isNaN(semVal) ? semVal : defaultSemester;
+      rawSec = (rawTokens[colMap.secIdx] || rawTokens[3] || defaultSection).toUpperCase();
+    } else if (rawTokens.length === 3) {
+      rawPRN = rawTokens[0] || '';
+      rawName = rawTokens[1] || '';
+      const semVal = Number(rawTokens[2]);
+      rawSem = !isNaN(semVal) ? semVal : defaultSemester;
+      rawSec = defaultSection;
+    } else if (rawTokens.length === 2) {
+      rawPRN = rawTokens[0] || '';
+      rawName = rawTokens[1] || '';
+      rawSem = defaultSemester;
+      rawSec = defaultSection;
+    } else {
+      invalidRecords.push({
+        rowNumber,
+        sourceFile: 'Direct Paste / Text',
+        raw: line,
+        reason: 'Insufficient columns (Expected at least PRN and Student Name)',
+      });
+      return;
+    }
+
+    if (!rawPRN || rawPRN.length < 3) {
+      invalidRecords.push({
+        rowNumber,
+        sourceFile: 'Direct Paste / Text',
+        raw: line,
+        reason: 'Invalid or missing PRN',
+      });
+      return;
+    }
+
+    if (!rawName || rawName.length < 2) {
+      invalidRecords.push({
+        rowNumber,
+        sourceFile: 'Direct Paste / Text',
+        raw: line,
+        reason: 'Invalid or missing Student Name',
+      });
+      return;
+    }
+
+    if (isNaN(rawSem) || rawSem < 1 || rawSem > 8) {
+      invalidRecords.push({
+        rowNumber,
+        sourceFile: 'Direct Paste / Text',
+        raw: line,
+        reason: `Invalid Semester: ${rawSem} (Must be between 1 and 8)`,
+      });
+      return;
+    }
+
+    if (!rawSec) {
+      rawSec = defaultSection;
+    }
+
+    const prnLower = rawPRN.toLowerCase();
+    const studentRec: StudentImportRecord = {
+      prn: rawPRN,
+      name: rawName,
+      semester: rawSem,
+      section: rawSec,
+      username: rawName.toLowerCase().replace(/\s+/g, '.'),
+      status: 'active',
+      sourceFile: 'Direct Paste / Text',
+      rowNumber,
+    };
+
+    if (seenInBatch.has(prnLower)) {
+      duplicateWithinBatch.push({
+        prn: rawPRN,
+        name: rawName,
+        sourceFile: 'Direct Paste / Text',
+        reason: 'Duplicate PRN within pasted text',
+      });
+      return;
+    }
+
+    seenInBatch.add(prnLower);
+
+    if (lowerExistingPRNs.has(prnLower)) {
+      existingInDbRecords.push({
+        prn: rawPRN,
+        name: rawName,
+        semester: rawSem,
+        section: rawSec,
+        sourceFile: 'Direct Paste / Text',
+        reason: 'PRN already exists in database',
+        record: studentRec,
+      });
+      return;
+    }
+
+    validRecords.push(studentRec);
+  });
+
+  return {
+    filesSummary: [
+      {
+        name: 'Direct Paste / Tabular Text',
+        size: new Blob([rawText]).size,
+        totalRows: lines.length,
+        validCount: validRecords.length,
+        existingCount: existingInDbRecords.length,
+        duplicateCount: duplicateWithinBatch.length,
+        invalidCount: invalidRecords.length,
+      },
+    ],
+    validRecords,
+    existingInDbRecords,
+    duplicateWithinBatch,
+    invalidRecords,
+    totalRead: lines.length,
   };
 }
 
