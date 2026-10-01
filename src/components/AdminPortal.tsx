@@ -1520,23 +1520,34 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                         </td>
                         <td className="py-2.5 px-3">
                           <div className="flex flex-wrap gap-1 max-w-md">
-                            {req.items?.map((it, idx) => (
-                              <span
-                                key={idx}
-                                className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border ${
-                                  it.status === 'approved'
-                                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                                    : it.status === 'rejected'
-                                    ? 'bg-rose-50 text-rose-800 border-rose-200'
-                                    : 'bg-slate-100 text-slate-700 border-slate-200'
-                                }`}
-                                title={`${it.subject_name} • ${it.faculty_name} (${formatDateDMY(it.date)} ${it.start_time}-${it.end_time})`}
-                              >
-                                <span>{it.subject_name || 'Lecture'}</span>
-                                {it.status === 'approved' && <Check className="w-3 h-3 ml-1 text-emerald-600" />}
-                                {it.status === 'rejected' && <X className="w-3 h-3 ml-1 text-rose-600" />}
-                              </span>
-                            ))}
+                            {req.items?.map((it, idx) => {
+                              const datesStr =
+                                it.dates && it.dates.length > 1
+                                  ? it.dates.map((d) => formatDateDMY(d)).join(', ')
+                                  : formatDateDMY(it.date);
+                              return (
+                                <span
+                                  key={idx}
+                                  className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border ${
+                                    it.status === 'approved'
+                                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                      : it.status === 'rejected'
+                                      ? 'bg-rose-50 text-rose-800 border-rose-200'
+                                      : 'bg-slate-100 text-slate-700 border-slate-200'
+                                  }`}
+                                  title={`${it.subject_name} • ${it.faculty_name} (${datesStr} ${it.start_time}-${it.end_time})`}
+                                >
+                                  <span>{it.subject_name || 'Lecture'}</span>
+                                  {it.dates && it.dates.length > 1 && (
+                                    <span className="ml-1 px-1 py-0.2 rounded text-[9px] bg-blue-100 text-blue-800 font-bold font-mono">
+                                      {it.dates.length}d
+                                    </span>
+                                  )}
+                                  {it.status === 'approved' && <Check className="w-3 h-3 ml-1 text-emerald-600" />}
+                                  {it.status === 'rejected' && <X className="w-3 h-3 ml-1 text-rose-600" />}
+                                </span>
+                              );
+                            })}
                           </div>
                         </td>
                         <td className="py-2.5 px-3 text-center whitespace-nowrap">
@@ -3529,10 +3540,30 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ currentUser, activeTab
                       <strong className="text-slate-800">{it.faculty_name || 'Assigned Faculty'}</strong>
                     </div>
                     <div>
-                      <span className="text-slate-400 block text-[10px] uppercase font-semibold">Date & Time:</span>
-                      <span>
-                        {formatDateDMY(it.date)} ({it.start_time} - {it.end_time})
+                      <span className="text-slate-400 block text-[10px] uppercase font-semibold">
+                        {it.dates && it.dates.length > 1 ? `Dates (${it.dates.length}) & Time:` : 'Date & Time:'}
                       </span>
+                      {it.dates && it.dates.length > 1 ? (
+                        <div>
+                          <div className="flex flex-wrap gap-1 mt-0.5">
+                            {it.dates.map((d, dIdx) => (
+                              <span
+                                key={dIdx}
+                                className="px-1.5 py-0.2 rounded bg-slate-100 text-slate-800 border border-slate-200 font-mono text-[11px]"
+                              >
+                                {formatDateDMY(d)}
+                              </span>
+                            ))}
+                          </div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">
+                            ({it.start_time} - {it.end_time})
+                          </div>
+                        </div>
+                      ) : (
+                        <span>
+                          {formatDateDMY(it.date)} ({it.start_time} - {it.end_time})
+                        </span>
+                      )}
                     </div>
                     <div>
                       <span className="text-slate-400 block text-[10px] uppercase font-semibold">Event / Activity:</span>

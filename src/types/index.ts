@@ -72,6 +72,7 @@ export interface EventAttendance {
 export interface AttendanceRequestItem {
   id: string;
   date: string;
+  dates?: string[];
   start_time: string;
   end_time: string;
   event_title: string;

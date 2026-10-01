@@ -14,6 +14,7 @@ import { SearchableSubjectCombobox, SearchableFacultyCombobox } from './Searchab
 import {
   GraduationCap,
   CalendarPlus,
+  Calendar,
   Clock,
   CheckCircle2,
   XCircle,
@@ -31,6 +32,7 @@ import {
   Sparkles,
   Edit2,
   Building2,
+  X,
 } from 'lucide-react';
 
 interface StudentPortalProps {
@@ -71,6 +73,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
     {
       id: 'item-1',
       date: new Date().toISOString().split('T')[0],
+      dates: [new Date().toISOString().split('T')[0]],
       start_time: '10:00',
       end_time: '11:00',
       event_title: '',
@@ -121,11 +124,13 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
   }, [studentsList, studentSearchTerm]);
 
   const handleAddItem = () => {
+    const today = new Date().toISOString().split('T')[0];
     setRequestItems((prev) => [
       ...prev,
       {
         id: `item-${Date.now()}`,
-        date: new Date().toISOString().split('T')[0],
+        date: today,
+        dates: [today],
         start_time: '11:00',
         end_time: '12:00',
         event_title: '',
@@ -144,6 +149,71 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
       return;
     }
     setRequestItems((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // Multiple dates per subject entry handlers
+  const handleAddItemDate = (entryIndex: number, specificDate?: string) => {
+    setRequestItems((prev) => {
+      const updated = [...prev];
+      const item = { ...updated[entryIndex] };
+      const currentDates = item.dates && item.dates.length > 0 ? [...item.dates] : (item.date ? [item.date] : []);
+
+      let nextDate = specificDate;
+      if (!nextDate) {
+        if (currentDates.length > 0) {
+          const lastDateStr = currentDates[currentDates.length - 1];
+          const lastDate = new Date(lastDateStr);
+          if (!isNaN(lastDate.getTime())) {
+            lastDate.setDate(lastDate.getDate() + 1);
+            nextDate = lastDate.toISOString().split('T')[0];
+          } else {
+            nextDate = new Date().toISOString().split('T')[0];
+          }
+        } else {
+          nextDate = new Date().toISOString().split('T')[0];
+        }
+      }
+
+      if (!currentDates.includes(nextDate)) {
+        currentDates.push(nextDate);
+      }
+      currentDates.sort();
+
+      item.dates = currentDates;
+      item.date = currentDates[0] || '';
+      updated[entryIndex] = item;
+      return updated;
+    });
+  };
+
+  const handleRemoveItemDate = (entryIndex: number, dateIndex: number) => {
+    setRequestItems((prev) => {
+      const updated = [...prev];
+      const item = { ...updated[entryIndex] };
+      const currentDates = item.dates && item.dates.length > 0 ? [...item.dates] : (item.date ? [item.date] : []);
+      if (currentDates.length <= 1) {
+        alert('Each entry must contain at least one date.');
+        return prev;
+      }
+      currentDates.splice(dateIndex, 1);
+      item.dates = currentDates;
+      item.date = currentDates[0] || '';
+      updated[entryIndex] = item;
+      return updated;
+    });
+  };
+
+  const handleItemDateChange = (entryIndex: number, dateIndex: number, newDateVal: string) => {
+    setRequestItems((prev) => {
+      const updated = [...prev];
+      const item = { ...updated[entryIndex] };
+      const currentDates = item.dates && item.dates.length > 0 ? [...item.dates] : (item.date ? [item.date] : []);
+      currentDates[dateIndex] = newDateVal;
+      item.dates = currentDates;
+      item.date = currentDates[0] || newDateVal;
+      updated[entryIndex] = item;
+      return updated;
+    });
   };
 
   const handleItemChange = (index: number, field: keyof AttendanceRequestItem, value: any) => {
@@ -219,19 +289,28 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
         : ''
     );
     setRequestItems(
-      req.items.map((it, idx) => ({
-        id: it.id || `edit-${idx}-${Date.now()}`,
-        date: it.date,
-        start_time: it.start_time,
-        end_time: it.end_time,
-        event_title: it.event_title,
-        subject_id: it.subject_id,
-        subject_name: it.subject_name,
-        faculty_id: it.faculty_id,
-        faculty_name: it.faculty_name,
-        reason: it.reason || '',
-        status: it.status || 'pending',
-      }))
+      req.items.map((it, idx) => {
+        const itemDates =
+          it.dates && it.dates.length > 0
+            ? it.dates
+            : it.date
+            ? [it.date]
+            : [new Date().toISOString().split('T')[0]];
+        return {
+          id: it.id || `edit-${idx}-${Date.now()}`,
+          date: it.date || itemDates[0],
+          dates: itemDates,
+          start_time: it.start_time,
+          end_time: it.end_time,
+          event_title: it.event_title,
+          subject_id: it.subject_id,
+          subject_name: it.subject_name,
+          faculty_id: it.faculty_id,
+          faculty_name: it.faculty_name,
+          reason: it.reason || '',
+          status: it.status || 'pending',
+        };
+      })
     );
     setErrorMessage('');
     setSuccessMessage('');
@@ -240,10 +319,12 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
 
   const handleCancelEdit = () => {
     setEditingRequestId(null);
+    const today = new Date().toISOString().split('T')[0];
     setRequestItems([
       {
         id: `item-${Date.now()}`,
-        date: new Date().toISOString().split('T')[0],
+        date: today,
+        dates: [today],
         start_time: '10:00',
         end_time: '11:00',
         event_title: '',
@@ -298,8 +379,10 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
     // Validation
     for (let i = 0; i < requestItems.length; i++) {
       const it = requestItems[i];
-      if (!it.date) {
-        setErrorMessage(`Entry #${i + 1}: Please select a date.`);
+      const currentDates =
+        it.dates && it.dates.length > 0 ? it.dates.filter(Boolean) : (it.date ? [it.date] : []);
+      if (currentDates.length === 0) {
+        setErrorMessage(`Entry #${i + 1}: Please select at least one valid date for this subject.`);
         return;
       }
       if (!it.subject_id) {
@@ -315,6 +398,19 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
         return;
       }
     }
+
+    // Build clean sanitized items with full dates array and primary date string
+    const sanitizedItems: AttendanceRequestItem[] = requestItems.map((it) => {
+      const cleanDates =
+        it.dates && it.dates.length > 0
+          ? Array.from(new Set(it.dates.filter(Boolean))).sort()
+          : (it.date ? [it.date] : []);
+      return {
+        ...it,
+        dates: cleanDates,
+        date: cleanDates[0] || it.date || '',
+      };
+    });
 
     // Validate optional Current Attendance Percentage
     let parsedPct: number | null = null;
@@ -339,7 +435,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
             semester: targetSemester,
             section: targetSection,
             current_attendance_percentage: parsedPct,
-            items: requestItems,
+            items: sanitizedItems,
           },
           currentUser
         );
@@ -355,7 +451,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
             semester: targetSemester,
             section: targetSection,
             current_attendance_percentage: parsedPct,
-            items: requestItems,
+            items: sanitizedItems,
           },
           currentUser
         );
@@ -854,24 +950,97 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                     )}
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    {/* Date */}
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Date of Missed Lecture *
-                      </label>
-                      <input
-                        type="date"
-                        required
-                        value={item.date}
-                        onChange={(e) => handleItemChange(index, 'date', e.target.value)}
-                        className="w-full text-xs px-3 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white"
-                      />
+                  {/* Multiple Dates for this Subject Section */}
+                  <div className="bg-white rounded-lg p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+                      <div>
+                        <div className="flex items-center space-x-2">
+                          <Calendar className="w-4 h-4 text-blue-800" />
+                          <label className="text-xs font-bold text-slate-800">
+                            Missed Lecture Dates for this Subject *
+                          </label>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-900 font-mono">
+                            {(item.dates?.length || 1)} {(item.dates?.length || 1) === 1 ? 'Date' : 'Dates'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Add multiple dates for this subject (e.g. for multi-day events, sports, hackathons, or consecutive missed lectures).
+                        </p>
+                      </div>
+
+                      <div className="flex items-center space-x-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleAddItemDate(index)}
+                          className="inline-flex items-center space-x-1 px-3 py-1.5 text-xs font-semibold text-blue-800 hover:text-blue-900 bg-blue-50 hover:bg-blue-100 rounded-lg border border-blue-200 transition cursor-pointer"
+                          title="Add another lecture date for this subject"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>+ Add Another Date</span>
+                        </button>
+                      </div>
                     </div>
 
-                    {/* Time */}
+                    {/* Date Inputs Grid */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+                      {(item.dates && item.dates.length > 0 ? item.dates : [item.date || '']).map((dateVal, dIdx) => (
+                        <div
+                          key={dIdx}
+                          className="p-2 rounded-lg border border-slate-200 bg-slate-50/70 flex items-center justify-between gap-2 transition hover:bg-white"
+                        >
+                          <div className="flex items-center space-x-2 flex-1 min-w-0">
+                            <span className="text-[10px] font-bold text-slate-400 font-mono w-5 shrink-0">
+                              #{dIdx + 1}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <input
+                                type="date"
+                                required
+                                value={dateVal}
+                                onChange={(e) => handleItemDateChange(index, dIdx, e.target.value)}
+                                className="w-full text-xs px-2.5 py-1.5 rounded-md border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white font-mono"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="flex items-center space-x-1 shrink-0">
+                            {(item.dates?.length || 1) > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveItemDate(index, dIdx)}
+                                className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition cursor-pointer"
+                                title="Remove this date"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Summary Chips if multiple dates */}
+                    {(item.dates?.length || 0) > 1 && (
+                      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-600 pt-1 border-t border-slate-100">
+                        <span className="font-semibold text-slate-700">Selected Dates ({item.dates?.length}):</span>
+                        {item.dates?.map((d, i) => (
+                          <span
+                            key={i}
+                            className="px-2 py-0.5 rounded bg-blue-50 text-blue-900 border border-blue-200 font-mono font-semibold text-[11px]"
+                          >
+                            {formatDateDMY(d)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Lecture Time */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">Start Time *</label>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Lecture Start Time *
+                      </label>
                       <input
                         type="time"
                         required
@@ -881,7 +1050,9 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">End Time *</label>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Lecture End Time *
+                      </label>
                       <input
                         type="time"
                         required
@@ -1184,7 +1355,29 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({ currentUser, activ
                         <tbody className="divide-y divide-slate-100 bg-white">
                           {req.items?.map((item, idx) => (
                             <tr key={idx} className="hover:bg-slate-50">
-                              <td className="py-2 px-3 font-medium text-slate-900 whitespace-nowrap">{formatDateDMY(item.date)}</td>
+                              <td className="py-2 px-3 font-medium text-slate-900">
+                                {item.dates && item.dates.length > 1 ? (
+                                  <div className="space-y-1">
+                                    <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-900 font-mono inline-block">
+                                      {item.dates.length} Dates
+                                    </span>
+                                    <div className="flex flex-wrap gap-1 max-w-xs">
+                                      {item.dates.map((d, dIdx) => (
+                                        <span
+                                          key={dIdx}
+                                          className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-800 border border-slate-200 whitespace-nowrap"
+                                        >
+                                          {formatDateDMY(d)}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <span className="font-mono text-slate-900 whitespace-nowrap">
+                                    {formatDateDMY(item.date)}
+                                  </span>
+                                )}
+                              </td>
                               <td className="py-2 px-3 text-slate-600 whitespace-nowrap">
                                 {item.start_time} - {item.end_time}
                               </td>

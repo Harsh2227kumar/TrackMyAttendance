@@ -712,31 +712,36 @@ export async function queryAttendanceReports(criteria: ReportFilterCriteria): Pr
 
       if (req.items && Array.isArray(req.items) && req.items.length > 0) {
         req.items.forEach((item, idx) => {
-          const key = `${req.student_prn}_${item.date}_${item.event_title}_${item.subject_name}`;
-          // If already added via event_attendance, skip duplicate
-          if (processedKeys.has(key)) return;
-          processedKeys.add(key);
+          const itemDates =
+            item.dates && item.dates.length > 0 ? item.dates : [item.date];
 
-          rawRows.push({
-            id: `req-${req.id}-${item.id || idx}`,
-            prn: req.student_prn,
-            student_name: req.student_name,
-            semester: req.semester,
-            section: req.section,
-            event_title: item.event_title || 'Attendance Update Request',
-            date: item.date,
-            time: `${item.start_time} - ${item.end_time}`,
-            current_attendance_percentage: basePct,
-            faculty_name: item.faculty_name || '',
-            subject_name: item.subject_name || '',
-            organiser_name: 'Academic Cell',
-            venue: 'Lecture Hall / Lab',
-            request_status: (item.status || req.status || 'pending') as any,
-            request_id: req.id,
-            request_reason: item.reason || '',
-            admin_comment: req.admin_comment || item.admin_note || '',
-            requested_item_count: req.items?.length || 1,
-            source_type: 'attendance_request',
+          itemDates.forEach((dateVal, dIdx) => {
+            const key = `${req.student_prn}_${dateVal}_${item.event_title}_${item.subject_name}`;
+            // If already added via event_attendance, skip duplicate
+            if (processedKeys.has(key)) return;
+            processedKeys.add(key);
+
+            rawRows.push({
+              id: `req-${req.id}-${item.id || idx}-${dIdx}`,
+              prn: req.student_prn,
+              student_name: req.student_name,
+              semester: req.semester,
+              section: req.section,
+              event_title: item.event_title || 'Attendance Update Request',
+              date: dateVal,
+              time: `${item.start_time} - ${item.end_time}`,
+              current_attendance_percentage: basePct,
+              faculty_name: item.faculty_name || '',
+              subject_name: item.subject_name || '',
+              organiser_name: 'Academic Cell',
+              venue: 'Lecture Hall / Lab',
+              request_status: (item.status || req.status || 'pending') as any,
+              request_id: req.id,
+              request_reason: item.reason || '',
+              admin_comment: req.admin_comment || item.admin_note || '',
+              requested_item_count: req.items?.length || 1,
+              source_type: 'attendance_request',
+            });
           });
         });
       } else {
